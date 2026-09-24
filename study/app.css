@@ -267,8 +267,76 @@ details[open] summary{margin-bottom:11px}
 .entry .en{font-weight:600;font-size:13.5px}
 .entry .ed{font-size:11.5px;color:var(--muted);margin-top:1px}
 
+/* ══════════════════════════════════════════════════════════════
+   大任务：分段进度条 + 完成情况总览
+   ══════════════════════════════════════════════════════════════ */
+
+/* 一个小任务一段。未完成用底色轨道，完成点亮 series-1。
+   段与段之间留 2px 缝，边界看得出来是「几件事」而不是一条连续的量。 */
+.bar.seg{gap:2px}
+.bar.seg > i.sq{flex:1 1 0;min-width:3px;background:var(--chip);border-radius:3px}
+.bar.seg > i.sq.on{background:var(--series-1)}
+
+.bar-txt .pct{font-weight:650;color:var(--text-primary)}
+.bar-txt .pct.full{color:var(--good)}
+
+.ov-who{display:flex;align-items:center;gap:9px;margin:15px 0 9px;
+  font-size:13px;font-weight:650;color:var(--text-primary)}
+.ov-who:first-child{margin-top:4px}
+.ov-row{display:flex;align-items:center;gap:11px;padding:4px 0;font-size:12.5px}
+.ov-nm{flex:0 0 32%;min-width:0;color:var(--text-secondary);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ov-bar{flex:1;height:12px;background:var(--chip);border-radius:6px;overflow:hidden;min-width:0}
+.ov-bar > i{display:block;height:100%;border-radius:6px}
+.ov-bar.me > i{background:var(--series-1)}
+.ov-bar.other > i{background:var(--series-2)}
+.ov-v{flex:0 0 auto;min-width:56px;text-align:right;font-weight:600;
+  color:var(--text-secondary);font-variant-numeric:tabular-nums}
+.legend .kdot.me{background:var(--series-1)}
+.legend .kdot.other{background:var(--series-2)}
+
+/* ══════════════════════════════════════════════════════════════
+   月行程表：一格一天，深浅 = 那天推进了几件事
+   单色由浅到深（sequential），不是彩虹 —— 量的大小只能用一个色相表达
+   ══════════════════════════════════════════════════════════════ */
+.mo-wrap{border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--page)}
+.mo-head,.mo-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+.mo-head{margin-bottom:6px}
+.mo-head span{font-size:11.5px;font-weight:600;color:var(--muted);text-align:center}
+
+.mo-d{position:relative;min-height:62px;border:1px solid var(--border);border-radius:9px;
+  background:var(--surface-1);padding:5px 7px;display:flex;flex-direction:column;
+  font-variant-numeric:tabular-nums}
+.mo-d.blank{background:none;border-color:transparent}
+.mo-d .dn{font-size:12px;font-weight:600;color:var(--text-secondary);line-height:1.2}
+.mo-d .dm{position:absolute;top:4px;right:6px;font-size:12px;line-height:1}
+.mo-d .dc{margin-top:auto;font-size:16px;font-weight:650;letter-spacing:-.02em}
+.mo-d.lv1{background:color-mix(in srgb, var(--series-1) 12%, var(--surface-1))}
+.mo-d.lv2{background:color-mix(in srgb, var(--series-1) 26%, var(--surface-1))}
+.mo-d.lv3{background:color-mix(in srgb, var(--series-1) 42%, var(--surface-1))}
+.mo-d.today{outline:2px solid var(--series-1);outline-offset:1px}
+/* 底色深到 lv2 以上时，次要色文字会掉到 4.5:1 以下
+   （实测浅色 lv3 上只有 4.45:1），改用主文字色 —— 复核命令在提交信息里 */
+.mo-d.today .dn,
+.mo-d.lv2 .dn,
+.mo-d.lv3 .dn{color:var(--text-primary)}
+
+/* 图例里的色阶块，和格子用同一套混色，改一处两边一起变 */
+.legend .kd{width:14px;height:14px;border-radius:5px;flex:0 0 auto;
+  border:1px solid var(--border);background:var(--surface-1)}
+.legend .kd.lv1{background:color-mix(in srgb, var(--series-1) 12%, var(--surface-1))}
+.legend .kd.lv2{background:color-mix(in srgb, var(--series-1) 26%, var(--surface-1))}
+.legend .kd.lv3{background:color-mix(in srgb, var(--series-1) 42%, var(--surface-1))}
+
 @media (max-width:560px){
   .pc-row .k{flex-basis:64px}
   body{padding:16px 12px 64px}
   .login-card{padding:24px 20px 20px}
+  .mo-wrap{padding:8px}
+  .mo-head,.mo-grid{gap:4px}
+  .mo-d{min-height:46px;padding:4px;border-radius:7px}
+  .mo-d .dc{font-size:13px}
+  .mo-d .dm{font-size:10px;top:3px;right:4px}
+  .ov-nm{flex-basis:40%}
+  .ov-v{min-width:46px}
 }

@@ -40,6 +40,7 @@
     goals: [], tasks: [], subtasks: [], daily: [], resources: [],
     tab: 'home',          // 登录后落在主页
     mood: null,
+    month: '',            // 月行程表显示哪个月 'YYYY-MM'，空 = 本月
     resScope: 'all',      // all | me | other
     feedKind: 'all',      // all | done | log | res
     noDoneAt: false,      // 库里还没加 done_at 列时置位（setup-3-feed.sql 跑之前）
@@ -70,6 +71,40 @@
     if (!b || b <= 0) return 0;
     return Math.max(0, Math.min(100, Math.round((a / b) * 100)));
   }
+
+  /* timestamptz → 本地时区的 'YYYY-MM-DD'。
+   不能用 done_at.slice(0,10)：库里存 UTC，晚上 8 点后完成的任务
+   按 UTC 算是「明天」，日历上会串行到后一格。 */
+  function isoDate(ts) {
+    if (!ts) return null;
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return null;
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  /* 按天聚合「那天发生了什么」，月行程表的数据源。
+   三张表都算进来：完成的小任务、完成的目标、当天的日记。 */
+  function dayStats() {
+    const m = {};
+    const slot = (k) => (m[k] || (m[k] = { subs: [], goals: [], log: null }));
+    for (const x of S.subtasks) {
+      if (!x.done) continue;
+      const k = isoDate(x.done_at);
+      if (k) slot(k).subs.push(x);
+    }
+    for (const g of S.goals) {
+      if (!g.done) continue;
+      const k = isoDate(g.done_at);
+      if (k) slot(k).goals.push(g);
+    }
+    for (const d of S.daily) {
+      if (!d.log_date) continue;
+      slot(d.log_date).log = d;
+    }
+    return m;
+  }
+  /* 那一天一共推进了几件事（小任务 + 目标） */
+  const dayCount = (e) => (e ? e.subs.length + e.goals.length : 0);
 
   /* DOM 构造器。文字一律走 textContent —— 库里的内容是别人输入的，当不可信数据处理。 */
   function h(tag, props, ...kids) {
@@ -278,8 +313,14 @@
 
   function emptyNote(txt) { return h('div', { class: 'empty', text: txt }); }
 
-  /* ── 页签一：30 天小目标 ───────────────────────────────────── */
+  /* ── 页签一：30 天小目标（前：目标备忘录  后：月行程表）────── */
   function renderGoals() {
+    renderGoalMemo();
+    renderMonth();
+  }
+
+  /* 目标备忘录：两人各自的 30 天目标 + 进度条 */
+  function renderGoalMemo() {
     twoCols($('goals-cols'), S.goals, (owner, rows, mine) => {
       if (!rows.length) return emptyNote(mine ? '还没有目标，上面加一个。' : '对方还没添加目标。');
       const wrap = h('div');
@@ -325,6 +366,158 @@
     });
   }
 
+  /* ── 月行程表 ──────────────────────────────────────────────── */
+  const MO_WEEK = ['日', '一', '二', '三', '四', '五', '六'];
+
+  /* 一格一天。格子深浅 = 那天推进了几件事（完成的小任务 + 完成的目标），
+     右上角小表情 = 那天记了心情，右下角数字 = 推进件数。
+     数据每次现算，所以在别处勾完任务、或对方那边实时推过来，这里都会跟着变。 */
+  function renderMonth() {
+    const stats = dayStats();
+    const t = today();
+
+    // 没选月份就跟当前月；跨月之后自动跟上来
+    if (!/^\d{4}-\d{2}$/.test(S.month || '')) S.month = t.slice(0, 7);
+    const [y, m] = S.month.split('-').map(Number);
+
+    const dim   = new Date(y, m, 0).getDate();     // 这个月有几天
+    const lead  = new Date(y, m - 1, 1).getDay();  // 1 号是周几（0 = 周日）
+    const cells = Math.ceil((lead + dim) / 7) * 7; // 补满整周
+
+    const head = $('mo-head');
+    clear(head);
+    MO_WEEK.forEach((w) => head.appendChild(h('span', { text: w })));
+
+    let nSub = 0, nGoal = 0, nLog = 0, nDay = 0;
+    const grid = $('mo-grid');
+    clear(grid);
+
+    for (let i = 0; i < cells; i++) {
+      const day = i - lead + 1;
+      if (day < 1 || day > dim) { grid.appendChild(h('div', { class: 'mo-d blank' })); continue; }
+
+      const key = S.month + '-' + pad(day);
+      const e = stats[key];
+      const n = dayCount(e);
+      if (n) nDay++;
+      if (e) {
+        nSub += e.subs.length;
+        nGoal += e.goals.length;
+        if (e.log) nLog++;
+      }
+      const lv = n === 0 ? 0 : n <= 2 ? 1 : n <= 5 ? 2 : 3;
+
+      // 悬停看明细 —— 格子上放不下，但这么小的格子必须能查到底做了什么
+      const bits = [];
+      if (e) {
+        e.goals.forEach((g) => bits.push('完成目标：' + (g.title || '(无标题)')));
+        e.subs.forEach((x) => {
+          const par = S.tasks.find((z) => z.id === x.task_id);
+          bits.push('完成小任务：' + (x.title || '(未填写)') + (par ? ' —— ' + par.title : ''));
+        });
+        if (e.log) {
+          bits.push('心情 ' + (MOODS[e.log.mood - 1] || '—') +
+                    (e.log.difficulty ? '：' + e.log.difficulty : ''));
+        }
+      }
+
+      grid.appendChild(h('div', {
+        class: 'mo-d' + (lv ? ' lv' + lv : '') + (key === t ? ' today' : ''),
+        title: key + '\n' + (bits.length ? bits.join('\n') : '这天没有记录'),
+      },
+        h('span', { class: 'dn', text: String(day) }),
+        e && e.log ? h('span', { class: 'dm', text: MOODS[e.log.mood - 1] || '' }) : null,
+        n ? h('span', { class: 'dc', text: String(n) }) : null
+      ));
+    }
+
+    // 月份导航
+    const nav = $('mo-nav');
+    clear(nav);
+    const shift = (d) => {
+      const dt = new Date(y, m - 1 + d, 1);
+      S.month = dt.getFullYear() + '-' + pad(dt.getMonth() + 1);
+      renderMonth();          // 只重画日历，不动上面的备忘录，切月不闪
+    };
+    const thisM = t.slice(0, 7);
+    nav.appendChild(h('button', { class: 'tiny', text: '‹ 上月', onclick: () => shift(-1) }));
+    nav.appendChild(h('button', {
+      class: 'tiny', text: y + ' 年 ' + m + ' 月',
+      title: '回到本月', disabled: S.month === thisM,
+      onclick: () => { S.month = thisM; renderMonth(); },
+    }));
+    nav.appendChild(h('button', { class: 'tiny', text: '下月 ›', onclick: () => shift(1) }));
+
+    $('mo-sub').textContent = '这个月推进了 ' + nSub + ' 个小任务、' + nGoal + ' 个目标，' +
+      '有 ' + nDay + ' 天在动，记了 ' + nLog + ' 天心情。';
+
+    /* 没有 done_at 列时，已完成的旧记录没有时间戳，日历上会凭空少掉一截。
+       与其让她以为日历坏了，不如直接说清楚缺什么、怎么补。 */
+    const noTime = S.subtasks.filter((x) => x.done && !x.done_at).length +
+                   S.goals.filter((g) => g.done && !g.done_at).length;
+    const warn = $('mo-warn');
+    if (noTime) {
+      warn.textContent = '注意：有 ' + noTime + ' 件已完成的记录没有完成时间（库里还缺 done_at 列），' +
+        '它们不会出现在日历格子上。去 Supabase 后台跑一次 study/setup-3-feed.sql 就能补上；' +
+        '在那之前，新勾的任务会正常记录时间。';
+      warn.hidden = false;
+    } else {
+      warn.hidden = true;
+    }
+
+    // 图例：深浅代表推进件数
+    const lg = $('mo-legend');
+    clear(lg);
+    [['无', null], ['1–2 件', 'lv1'], ['3–5 件', 'lv2'], ['6 件以上', 'lv3']].forEach(([txt, lv]) => {
+      lg.appendChild(h('span', { class: 'item2' },
+        h('span', { class: 'kd' + (lv ? ' ' + lv : '') }),
+        h('span', { text: txt })
+      ));
+    });
+
+    renderMonthTable(dim, stats);
+  }
+
+  /* 表格视图 —— 日历格子放不下明细，也给读屏和色觉障碍留一条不靠颜色的路 */
+  function renderMonthTable(dim, stats) {
+    const box = $('mo-table');
+    clear(box);
+    const rows = [];
+    for (let d = 1; d <= dim; d++) {
+      const key = S.month + '-' + pad(d);
+      const e = stats[key];
+      if (!e) continue;
+      const what = [];
+      e.goals.forEach((g) => what.push('完成目标：' + (g.title || '(无标题)')));
+      e.subs.forEach((x) => {
+        const par = S.tasks.find((z) => z.id === x.task_id);
+        what.push('完成小任务：' + (x.title || '(未填写)') + (par ? ' —— ' + par.title : ''));
+      });
+      rows.push([
+        key,
+        String(dayCount(e)),
+        e.log ? (MOODS[e.log.mood - 1] || '—') : '—',
+        what.join('；') || '—',
+      ]);
+    }
+    if (!rows.length) {
+      box.appendChild(h('p', { class: 'hint', text: '这个月还没有动静。' }));
+      return;
+    }
+    const tbl = h('table');
+    tbl.appendChild(h('thead', null, h('tr', null,
+      h('th', { text: '日期' }), h('th', { text: '推进' }),
+      h('th', { text: '心情' }), h('th', { text: '做了什么' })
+    )));
+    const tb = h('tbody');
+    rows.forEach((r) => tb.appendChild(h('tr', null,
+      h('td', { text: r[0] }), h('td', { text: r[1] }),
+      h('td', { text: r[2] }), h('td', { text: r[3] })
+    )));
+    tbl.appendChild(tb);
+    box.appendChild(h('div', { class: 'tblwrap' }, tbl));
+  }
+
   async function bumpGoal(g, d) {
     const v = Math.max(0, Math.min(999999, (g.progress || 0) + d));
     g.progress = v;
@@ -333,7 +526,63 @@
   }
 
   /* ── 页签二：大任务拆解 ────────────────────────────────────── */
+
+  /* 总览：每个大任务一条完成率横条，按人分色（颜色跟左右分栏的左边框一致）。
+     直接标注 n / m，不让人靠猜条长 —— 条是粗略感受，数字是准的。 */
+  function renderTaskOverview() {
+    const box = $('ov-list'), lg = $('ov-legend'), sub = $('ov-sub');
+    clear(box); clear(lg);
+
+    const mineId = S.me && S.me.id;
+    const ids = [];
+    if (mineId) ids.push(mineId);
+    Object.keys(S.profileMap).forEach((id) => { if (id !== mineId) ids.push(id); });
+    const owners = ids.filter((id) => S.tasks.some((t) => t.owner === id));
+
+    if (!owners.length) {
+      sub.textContent = '还没有大任务，上面创建一个。';
+      box.appendChild(emptyNote('创建大任务后，这里显示每个人的推进情况。'));
+      return;
+    }
+
+    // 两条以上才要图例；只有一个人有任务时，上方的头像+名字已经说明了是谁
+    if (owners.length > 1) {
+      owners.forEach((id) => lg.appendChild(h('span', { class: 'item2' },
+        h('span', { class: 'kdot ' + (id === mineId ? 'me' : 'other') }),
+        h('span', { text: nameOf(id) + (id === mineId ? '（我）' : '') })
+      )));
+    }
+
+    let nTask = 0, nSub = 0, nDone = 0;
+    for (const id of owners) {
+      const rows = S.tasks.filter((t) => t.owner === id);
+      box.appendChild(h('div', { class: 'ov-who' },
+        avatarEl(id, 'sm'),
+        h('span', { class: 'nm', text: nameOf(id) + (id === mineId ? '（我）' : '') })
+      ));
+      for (const t of rows) {
+        const subs = S.subtasks.filter((x) => x.task_id === t.id);
+        const dn = subs.filter((x) => x.done).length;
+        const p = subs.length ? pct(dn, subs.length) : 0;
+        nTask++; nSub += subs.length; nDone += dn;
+        box.appendChild(h('div', {
+          class: 'ov-row',
+          title: (t.title || '(无标题)') + '：' + dn + ' / ' + subs.length + ' 个小任务已完成',
+        },
+          h('span', { class: 'ov-nm', text: t.title || '(无标题)' }),
+          h('span', { class: 'ov-bar ' + (id === mineId ? 'me' : 'other') },
+            h('i', { style: { width: p + '%' } })
+          ),
+          h('span', { class: 'ov-v', text: subs.length ? dn + ' / ' + subs.length : '未拆解' })
+        ));
+      }
+    }
+    sub.textContent = '共 ' + nTask + ' 个大任务 · 拆出 ' + nSub + ' 个小任务，已完成 ' +
+      nDone + ' 个（' + pct(nDone, nSub) + '%）';
+  }
+
   function renderTasks() {
+    renderTaskOverview();
     twoCols($('tasks-cols'), S.tasks, (owner, rows, mine) => {
       if (!rows.length) return emptyNote(mine ? '还没有大任务，上面创建一个。' : '对方还没添加大任务。');
       const wrap = h('div');
@@ -359,10 +608,16 @@
               left < 0 ? h('span', { class: 'pill bad', text: '已过期 ' + (-left) + ' 天' })
                        : h('span', { class: 'pill' + (left <= 3 ? ' bad' : ''), text: '剩 ' + left + ' 天' })
             ) : null,
-            h('div', { class: 'bar' }, h('i', { style: { width: p + '%' } })),
+            /* 分段进度条：一个小任务一段，勾掉哪段就点亮哪段 —— 一眼看出卡在第几步 */
+            h('div', { class: 'bar seg' },
+              subs.map((x, i) => h('i', {
+                class: 'sq' + (x.done ? ' on' : ''),
+                title: '第 ' + (i + 1) + ' 步：' + (x.title || '(未填写)') + (x.done ? ' ✅ 已完成' : ' ⬜ 未完成'),
+              }))
+            ),
             h('div', { class: 'bar-txt' },
               h('span', { text: doneN + ' / ' + subs.length + ' 个小任务' }),
-              h('span', { text: p + '%' })
+              h('span', { class: 'pct' + (subs.length && p === 100 ? ' full' : ''), text: p + '%' })
             ),
             list,
             mine ? h('div', { class: 'acts' },

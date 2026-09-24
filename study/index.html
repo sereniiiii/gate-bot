@@ -100,7 +100,26 @@
       </div>
       <p class="hint">周期 = 开始日 + 29 天。进度条按「进度 / 目标值」走。</p>
     </div>
+
+    <!-- 目标备忘录（前）——两个人各自的目标与进度 -->
     <div class="cols" id="goals-cols"></div>
+
+    <!-- 月行程表（后）——按天汇总推进情况，跟着上面的数据自动更新 -->
+    <div class="card">
+      <h2>月行程表</h2>
+      <p class="sub" id="mo-sub">…</p>
+      <p class="hint" id="mo-warn" hidden></p>
+      <div class="row tight" id="mo-nav" style="margin:14px 0 12px"></div>
+      <div class="legend" id="mo-legend"></div>
+      <div class="mo-wrap">
+        <div class="mo-head" id="mo-head"></div>
+        <div class="mo-grid" id="mo-grid"></div>
+      </div>
+      <details style="margin-top:14px">
+        <summary>表格视图（每天的明细）</summary>
+        <div id="mo-table"></div>
+      </details>
+    </div>
   </section>
 
   <!-- ── 大任务拆解 ── -->
@@ -122,6 +141,15 @@
       </div>
       <p class="hint">创建后会生成对应数量的空白小任务，你再逐个填内容。进度条 = 已完成小任务 / 总数。</p>
     </div>
+
+    <!-- 总览：所有大任务的完成率一览 -->
+    <div class="card">
+      <h2>完成情况总览</h2>
+      <p class="sub" id="ov-sub">…</p>
+      <div class="legend" id="ov-legend" style="margin-top:12px"></div>
+      <div id="ov-list"></div>
+    </div>
+
     <div class="cols" id="tasks-cols"></div>
   </section>
 

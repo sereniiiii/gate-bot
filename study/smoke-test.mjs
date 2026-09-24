@@ -1,0 +1,440 @@
+/* 学习协作 · app.js 冒烟测试 v4
+   跑法：node study/smoke-test.mjs     退出码 0 = 全过，非 0 = 有断言没过
+
+   覆盖：登录、主页与动态流、头像上传、四个功能区、
+         大任务分段进度条与完成情况总览、月行程表（含月份导航、done_at 缺失时的降级）。
+
+   假 DOM + 假 Supabase，不联网、不碰真库。
+   验证不了的事：真实网络、Supabase 的 RLS 策略、真实浏览器的排版。
+   这几样只能在浏览器里看 —— 别把这里的「全过」当成那几样也过了。
+   配色对比度另有一个自检：node study/check-contrast.mjs */
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+/* 本脚本在 study/ 目录下，用相对本文件的位置找 app.js / app.css，
+   这样仓库挪到哪台机器上都能跑。 */
+const DIR = path.dirname(fileURLToPath(import.meta.url));
+
+/* ── 假 DOM ─────────────────────────────────────────────────── */
+class El {
+  constructor(tag) {
+    this.tagName = String(tag).toUpperCase();
+    this.nodeType = 1; this.children = []; this.parentNode = null;
+    this.attrs = {}; this.dataset = {}; this.style = {}; this.listeners = {};
+    this._text = ''; this._cls = new Set();
+    this.hidden = false; this.value = ''; this.disabled = false; this.checked = false;
+    this.id = ''; this.href = ''; this.download = ''; this.title = ''; this.type = '';
+    this.src = ''; this.alt = ''; this.width = 0; this.height = 0;
+    const self = this;
+    this.classList = {
+      add: (...c) => c.forEach((x) => self._cls.add(x)),
+      remove: (...c) => c.forEach((x) => self._cls.delete(x)),
+      contains: (c) => self._cls.has(c),
+      toggle: (c, on) => { const v = on === undefined ? !self._cls.has(c) : !!on; v ? self._cls.add(c) : self._cls.delete(c); return v; },
+    };
+  }
+  get className() { return [...this._cls].join(' '); }
+  set className(v) { this._cls = new Set(String(v).split(/\s+/).filter(Boolean)); }
+  get firstChild() { return this.children[0] || null; }
+  get childNodes() { return this.children; }
+  appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
+  removeChild(c) { const i = this.children.indexOf(c); if (i >= 0) this.children.splice(i, 1); return c; }
+  remove() { if (this.parentNode) this.parentNode.removeChild(this); }
+  setAttribute(k, v) { this.attrs[k] = String(v); if (k === 'class') this.className = v; }
+  getAttribute(k) { return this.attrs[k] ?? null; }
+  addEventListener(t, f) { (this.listeners[t] = this.listeners[t] || []).push(f); }
+  fire(t, ev) { (this.listeners[t] || []).forEach((f) => f(ev || { target: this, preventDefault() {} })); }
+  click() { this.fire('click'); }
+  closest(sel) { let n = this; const c = sel.replace(/^\./, ''); while (n) { if (n._cls && n._cls.has(c)) return n; n = n.parentNode; } return null; }
+  querySelectorAll() { return []; }
+  getBoundingClientRect() { return { left: 0, top: 0, width: 720, height: 200 }; }
+  get offsetWidth() { return 120; }
+  focus() {} scrollIntoView() {}
+  getContext() { return { drawImage() {} }; }
+  toDataURL() { return 'data:image/jpeg;base64,' + 'A'.repeat(400); }
+  get textContent() {
+    if (this.nodeType === 3) return this._text;
+    if (this.children.length === 0) return this._text;
+    return this.children.map((c) => c.textContent).join('');
+  }
+  set textContent(v) { this.children.length = 0; this._text = String(v); }
+}
+
+const reg = new Map();
+const TABNAMES = ['home', 'goals', 'tasks', 'daily', 'res', 'data'];
+const tabs = TABNAMES.map((t) => {
+  const e = new El('button'); e.dataset.tab = t; e.className = t === 'home' ? 'tab on' : 'tab'; return e;
+});
+const panes = TABNAMES.map((t) => {
+  const e = new El('section'); e.id = 'pane-' + t; e.hidden = t !== 'home'; reg.set(e.id, e); return e;
+});
+const body = new El('body');
+reg.set('toast', new El('div'));
+
+globalThis.document = {
+  readyState: 'complete', body, activeElement: null,
+  getElementById(id) { if (!reg.has(id)) reg.set(id, new El('div')); return reg.get(id); },
+  createElement: (t) => new El(t),
+  createElementNS: (_n, t) => new El(t),
+  createTextNode: (t) => { const n = new El('#text'); n.nodeType = 3; n._text = String(t); return n; },
+  querySelectorAll(sel) { return sel === '.tab' ? tabs : sel === '.pane' ? panes : []; },
+  addEventListener() {},
+};
+globalThis.confirm = () => true;
+globalThis.window = globalThis;
+globalThis.scrollTo = () => {};
+globalThis.URL.createObjectURL = () => 'blob:fake';
+globalThis.URL.revokeObjectURL = () => {};
+globalThis.Image = class {
+  set src(_v) { this.width = 400; this.height = 300; setTimeout(() => this.onload && this.onload(), 0); }
+};
+
+/* ── 假 Supabase ────────────────────────────────────────────── */
+const ME = 'me-uuid', OT = 'other-uuid';
+const DB = {
+  profiles: [{ id: ME, display_name: '小 A', avatar: '' }, { id: OT, display_name: '小 B', avatar: '' }],
+  goals: [
+    { id: 'g1', owner: ME, period_start: '2026-09-01', title: '背完 300 个单词', detail: '每天 10 个', target: 300, progress: 120, done: false, done_at: null, created_at: '2026-09-01T00:00:00Z' },
+    { id: 'g2', owner: OT, period_start: '2026-09-10', title: '读完一本书', detail: '', target: 100, progress: 100, done: true, done_at: '2026-09-20T10:00:00Z', created_at: '2026-09-10T00:00:00Z' },
+  ],
+  tasks: [
+    { id: 't1', owner: ME, title: '学完线性代数', detail: '把 MIT 那门刷完', due_date: '2026-10-10', created_at: '2026-09-02T00:00:00Z' },
+    { id: 't2', owner: OT, title: '写完开题报告', detail: '', due_date: '2026-09-20', created_at: '2026-09-03T00:00:00Z' },
+  ],
+  subtasks: [
+    { id: 's1', task_id: 't1', owner: ME, seq: 1, title: '第 1-4 讲', detail: '', done: true, done_at: '2026-09-21T09:00:00Z' },
+    { id: 's2', task_id: 't1', owner: ME, seq: 2, title: '第 5-8 讲', detail: '', done: true, done_at: '2026-09-22T09:00:00Z' },
+    { id: 's3', task_id: 't1', owner: ME, seq: 3, title: '习题课', detail: '', done: false, done_at: null },
+    { id: 's4', task_id: 't2', owner: OT, seq: 1, title: '文献综述', detail: '', done: false, done_at: null },
+  ],
+  daily_logs: [
+    { id: 'd1', owner: ME, log_date: '2026-09-24', mood: 4, difficulty: '特征值那块卡住了', note: '', created_at: '2026-09-24T20:00:00Z' },
+    { id: 'd2', owner: ME, log_date: '2026-09-23', mood: 5, difficulty: '', note: '状态不错', created_at: '2026-09-23T20:00:00Z' },
+    { id: 'd3', owner: OT, log_date: '2026-09-24', mood: 2, difficulty: '找不到数据', note: '', created_at: '2026-09-24T21:00:00Z' },
+  ],
+  resources: [
+    { id: 'r1', owner: ME, kind: 'book', name: '线性代数应该这样学', platform: '', subject: '数学', url: '', status: 'doing', created_at: '2026-09-05T00:00:00Z' },
+    { id: 'r2', owner: ME, kind: 'course', name: 'MIT 18.06', platform: 'B站', subject: '数学', url: '', status: 'doing', created_at: '2026-09-06T00:00:00Z' },
+    { id: 'r3', owner: ME, kind: 'teacher', name: 'Gilbert Strang', platform: 'MIT OCW', subject: '数学', url: '', status: 'todo', created_at: '2026-09-07T00:00:00Z' },
+    { id: 'r4', owner: ME, kind: 'book', name: '英语语法新思维', platform: '', subject: '英语', url: '', status: 'done', created_at: '2026-09-08T00:00:00Z' },
+    { id: 'r5', owner: OT, kind: 'course', name: '考研政治', platform: '徐涛', subject: '政治', url: '', status: 'doing', created_at: '2026-09-09T00:00:00Z' },
+  ],
+};
+let seq = 100;
+function qb(table) {
+  const st = { op: 'select', eq: null, single: false };
+  const o = {
+    select() { return o; }, order() { return o; }, limit() { return o; },
+    single() { st.single = true; return o; },
+    insert(r) { st.op = 'insert'; st.rows = Array.isArray(r) ? r : [r]; return o; },
+    update(r) { st.op = 'update'; st.rows = r; return o; },
+    upsert(r) { st.op = 'upsert'; st.rows = Array.isArray(r) ? r : [r]; return o; },
+    delete() { st.op = 'delete'; return o; },
+    eq(k, v) { st.eq = [k, v]; return o; },
+    // 真客户端（PostgrestBuilder.then）返回的是 Promise，这里也必须返回，
+    // 否则 setDone() 里的 .then(cb) 链式调用会拿到 undefined
+    then(res, rej) {
+      return new Promise((resolve) => {
+        const T = (DB[table] = DB[table] || []);
+        const hit = (x) => !st.eq || x[st.eq[0]] === st.eq[1];
+        let data = null;
+        if (st.op === 'select') data = T.filter(hit);
+        else if (st.op === 'insert') { st.rows.forEach((r) => { r.id = r.id || 'new' + (++seq); T.push(r); }); data = st.single ? st.rows[0] : st.rows; }
+        else if (st.op === 'update') { const t = T.filter(hit); t.forEach((x) => Object.assign(x, st.rows)); data = t; }
+        else if (st.op === 'delete') { const t = T.filter(hit); t.forEach((x) => T.splice(T.indexOf(x), 1)); data = t; }
+        else if (st.op === 'upsert') {
+          st.rows.forEach((r) => {
+            const k = table === 'daily_logs' ? (x) => x.owner === r.owner && x.log_date === r.log_date : (x) => x.id === r.id;
+            const ex = T.find(k);
+            if (ex) Object.assign(ex, r); else { r.id = r.id || 'new' + (++seq); T.push(r); }
+          });
+          data = st.rows;
+        }
+        resolve({ data: st.single ? (Array.isArray(data) ? data[0] : data) : data, error: null });
+      }).then(res, rej);
+    },
+  };
+  return o;
+}
+globalThis.supabase = {
+  createClient: () => ({
+    from: (t) => qb(t),
+    auth: {
+      getSession: async () => ({ data: { session: { user: { id: ME, email: 'a@example.com' } } }, error: null }),
+      signInWithPassword: async () => ({ data: { user: { id: ME, email: 'a@example.com' } }, error: null }),
+      signOut: async () => ({ error: null }),
+      onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
+    },
+    channel: () => ({ on() { return this; }, subscribe(cb) { cb('SUBSCRIBED'); return this; } }),
+    removeChannel() {},
+  }),
+};
+
+/* ── 工具 ───────────────────────────────────────────────────── */
+const tick = () => new Promise((r) => setTimeout(r, 30));
+const $ = (id) => document.getElementById(id);
+const walk = (n, fn) => { fn(n); (n.children || []).forEach((c) => walk(c, fn)); };
+const findAll = (root, pred) => { const o = []; walk(root, (n) => { if (pred(n)) o.push(n); }); return o; };
+const find = (root, pred) => findAll(root, pred)[0] || null;
+const btns = (root, label) => findAll(root, (n) => n.tagName === 'BUTTON' && n.textContent.trim() === label);
+const inputs = (root) => findAll(root, (n) => n.tagName === 'INPUT' && n.type === 'text').map((n) => n.value);
+
+const fails = [];
+const ok = (cond, label, extra) => {
+  if (cond) console.log('  ✅ ' + label);
+  else { fails.push(label); console.log('  ❌ ' + label + (extra ? '  → ' + extra : '')); }
+};
+
+/* ── 跑 ─────────────────────────────────────────────────────── */
+eval(fs.readFileSync(path.join(DIR, 'app.js'), 'utf8'));
+await tick(); await tick(); await tick();
+
+console.log('── 登录后落在主页 ──');
+ok($('view-app').hidden === false && $('view-login').hidden === true, '数据页显示、登录页隐藏');
+ok(tabs[0].className.includes('on'), '主页页签是选中态');
+ok(!tabs[1].className.includes('on'), '其他页签没被选中');
+ok($('pane-home').hidden === false, '主页 pane 可见');
+ok(panes.slice(1).every((p) => p.hidden === true), '其余 5 个 pane 都隐藏');
+ok($('home-sub').textContent.includes('今天是'), '主页副标题：' + $('home-sub').textContent);
+
+console.log('── 主页：两个人的状态卡 ──');
+const pcs = findAll($('home-people'), (n) => n.className.includes('pcard'));
+ok(pcs.length === 2, '两张状态卡，实际 ' + pcs.length);
+ok(pcs[0].className.includes('me') && pcs[1].className.includes('other'), '我 / 对方 分栏样式正确');
+const pc0 = pcs[0].textContent;
+ok(pc0.includes('小 A'), '我的名字');
+ok(pc0.includes('0 / 1 个完成'), '目标统计（我只有 1 个目标）：' + (pc0.match(/\d+ \/ \d+ 个完成/) || [''])[0]);
+ok(pc0.includes('累计 120 / 300'), '累计进度');
+ok(pc0.includes('小任务 2 / 3'), '小任务统计');
+ok(pc0.includes('今天') && pc0.includes('还没记'), '今天还没记（09-25 无记录）');
+ok(pcs[1].textContent.includes('小 B'), '对方名字');
+ok(pcs[1].textContent.includes('1 / 1 个完成'), '对方目标已完成 1/1');
+ok(findAll(pcs[0], (n) => n.className.includes('lg')).length === 1, '状态卡上有大头像');
+ok(btns(pcs[0], '上传头像').length === 1, '自己的卡有「上传头像」按钮');
+ok(btns(pcs[1], '上传头像').length === 0, '对方的卡没有（不能改别人）');
+
+console.log('── 主页：动态流 ──');
+const feedTxt = $('feed').textContent;
+ok(feedTxt.includes('完成了 30 天目标'), '看到「完成了目标」');
+ok(feedTxt.includes('读完一本书'), '完成的目标名在');
+ok(feedTxt.includes('完成小任务') && feedTxt.includes('第 1-4 讲'), '看到完成的小任务');
+ok(feedTxt.includes('学完线性代数'), '小任务归属的大任务名在');
+ok(feedTxt.includes('记了 2026-09-24 的心情与困难'), '看到每日记录');
+ok(feedTxt.includes('添加了工具书') && feedTxt.includes('线性代数应该这样学'), '看到添加的资源');
+ok(!feedTxt.includes('习题课'), '未完成的小任务不进动态流');
+ok(feedTxt.includes('找不到数据'), '对方记的困难也看得到');
+const feedItems = findAll($('feed'), (n) => n.className.includes('feed-item'));
+ok(feedItems.length >= 9, '动态条数 ' + feedItems.length);
+ok(findAll($('feed'), (n) => n.className.includes('av')).length === feedItems.length, '每条动态都带头像');
+ok(findAll($('feed'), (n) => n.className.includes('mo')).length === 3, '有心情的三条带了表情');
+const mk = findAll($('feed-filter'), (n) => n.tagName === 'BUTTON');
+ok(mk.length === 4, '筛选 4 个：' + mk.map((b) => b.textContent).join(' / '));
+btns($('feed-filter'), '完成了什么')[0].fire('click'); await tick();
+const doneOnly = findAll($('feed'), (n) => n.className.includes('feed-item'));
+ok(doneOnly.every((n) => n.textContent.includes('完成')), '点「完成了什么」后只剩完成类，共 ' + doneOnly.length + ' 条');
+ok(!$('feed').textContent.includes('考研政治'), '资源被筛掉了');
+btns($('feed-filter'), '学习资源')[0].fire('click'); await tick();
+ok($('feed').textContent.includes('考研政治') && !$('feed').textContent.includes('完成小任务'), '切到「学习资源」也正确');
+btns($('feed-filter'), '全部')[0].fire('click'); await tick();
+
+console.log('── 主页：入口跳转 ──');
+// entries 顺序 = goals, tasks, daily, res, data（下标 0 起）
+const entries = findAll($('home-entries'), (n) => n.className.includes('entry'));
+ok(entries.length === 5, '入口卡片 5 个');
+ok(entries[0].textContent.includes('30 天目标'), '入口顺序：' + entries.map((e) => e.textContent.slice(0, 4)).join(' '));
+entries[0].fire('click'); await tick();
+ok(tabs[1].className.includes('on') && !tabs[0].className.includes('on'), '点「30 天目标」→ 页签切过去了');
+ok($('pane-goals').hidden === false && $('pane-home').hidden === true, 'pane 也跟着切了');
+ok($('goals-cols').textContent.includes('背完 300 个单词'), '目标内容渲染');
+tabs[0].fire('click'); await tick();
+ok($('pane-home').hidden === false, '点「主页」页签能回来');
+
+console.log('── 头像：点自己的头像 → 选图 → 上传 ──');
+ok($('me-av').textContent === '小', '还没上传时用名字首字兜底，实际「' + $('me-av').textContent + '」');
+ok($('me-av').className.includes('me') && $('me-av').className.includes('clickable'), '头像是可点的我的样式');
+let fileOpened = 0;
+$('av-file').addEventListener('click', () => { fileOpened++; });
+$('me-av').fire('click');
+ok(fileOpened === 1, '点头像确实触发了文件选择');
+$('av-file').fire('change', { target: { files: [{ type: 'image/png' }] } });
+await tick(); await tick();
+ok(DB.profiles[0].avatar.startsWith('data:image/jpeg;base64,'), '头像写进了 profiles.avatar');
+ok(DB.profiles[0].avatar.length < 120000, '头像体积可控：' + DB.profiles[0].avatar.length + ' 字符');
+ok(find($('me-av'), (n) => n.tagName === 'IMG') !== null, '页头头像变成了 img');
+ok(findAll($('feed'), (n) => n.tagName === 'IMG').length >= 1, '动态流里的头像也跟着换了');
+const pcs2 = findAll($('home-people'), (n) => n.className.includes('pcard'));
+ok(findAll(pcs2[0], (n) => n.tagName === 'IMG').length === 1, '状态卡头像换成了 img');
+ok(btns(pcs2[0], '换头像').length === 1, '按钮文案变成「换头像」');
+$('av-file').fire('change', { target: { files: [{ type: 'text/plain' }] } });
+await tick();
+ok($('toast').textContent.includes('图片'), '非图片文件被拒：' + $('toast').textContent);
+
+console.log('── 勾完成 → 写 done_at → 主页动态流能看到 ──');
+entries[1].fire('click'); await tick();   // tasks
+const boxes = findAll($('tasks-cols'), (n) => n.tagName === 'INPUT' && n.type === 'checkbox');
+const mineBoxes = boxes.filter((b) => !b.disabled);
+ok(mineBoxes.length === 3, '我有 3 个可勾的小任务，实际 ' + mineBoxes.length);
+const todo = mineBoxes[2];              // 习题课，尚未完成
+todo.checked = true;
+todo.fire('change', { target: todo });
+await tick(); await tick();
+const s3 = DB.subtasks.find((x) => x.id === 's3');
+ok(s3.done === true, '小任务写成了已完成');
+ok(typeof s3.done_at === 'string' && s3.done_at.includes('T'), 'done_at 写进去了：' + s3.done_at);
+ok(Math.abs(Date.now() - new Date(s3.done_at).getTime()) < 60000, 'done_at 是刚刚，不是瞎写的');
+tabs[0].fire('click'); await tick();
+ok($('feed').textContent.includes('习题课'), '刚勾完的小任务立刻出现在主页动态流里');
+
+console.log('── 30 天目标：标记完成 → done_at ──');
+entries[0].fire('click'); await tick();   // goals
+btns($('goals-cols'), '标记完成')[0].fire('click');
+await tick(); await tick();
+const g1 = DB.goals.find((x) => x.id === 'g1');
+ok(g1.done === true, '目标标记完成');
+ok(g1.progress === 300, '进度被推到目标值 300');
+ok(typeof g1.done_at === 'string', 'done_at 写上：' + g1.done_at);
+
+console.log('── 原有四个功能区没被改坏 ──');
+ok($('goals-cols').textContent.includes('进度 300 / 300'), '进度文案');
+ok(findAll($('goals-cols'), (n) => n.className.includes('who')).length === 2, '目标仍双栏');
+ok(findAll($('goals-cols'), (n) => n.className.includes('sm')).length === 2, '每栏标题带头像');
+tabs[2].fire('click'); await tick();
+ok($('tasks-cols').textContent.includes('3 / 3 个小任务'), '大任务计数（勾完 s3 → 3/3）');
+tabs[3].fire('click'); await tick();
+ok($('daily-cols').textContent.includes('特征值那块卡住了'), '日记内容');
+tabs[4].fire('click'); await tick();
+ok($('res-tiles').textContent.includes('资源总数'), '资源统计卡');
+const svg = $('res-chart').children[0];
+ok(svg.children.filter((c) => c.tagName === 'RECT' && String(c.attrs.fill).includes('--series-')).length > 0, '宏观图有数据段');
+ok(svg.children.filter((c) => c.tagName === 'TEXT').map((c) => c.textContent).includes('数学'), '图上有学科标签');
+tabs[5].fire('click'); await tick();
+ok($('export-meta').textContent.includes('目标 2'), '导出统计：' + $('export-meta').textContent);
+
+/* ══════════════════════════════════════════════════════════════
+   本轮新增：大任务可视化 + 月行程表
+   注意这些断言必须跑在上面「勾完 s3、标记 g1 完成」之后 ——
+   主题就是「改完某处，别处会不会自动跟上」。
+   ══════════════════════════════════════════════════════════════ */
+
+console.log('── 大任务：完成情况总览 ──');
+tabs[2].fire('click'); await tick();          // tasks
+ok($('ov-sub').textContent.includes('共 2 个大任务'), '总览副标题：' + $('ov-sub').textContent);
+ok($('ov-sub').textContent.includes('已完成 3 个'), '总览统计跟着勾选走');
+ok(findAll($('ov-list'), (n) => n.className.includes('ov-who')).length === 2, '两个人各一组');
+const ovRows = findAll($('ov-list'), (n) => n.className.includes('ov-row'));
+ok(ovRows.length === 2, '两个大任务两条横条，实际 ' + ovRows.length);
+ok(ovRows[0].textContent.includes('学完线性代数'), '我的任务排在前面');
+ok(ovRows[0].textContent.includes('3 / 3'), '我的 3 / 3 —— 勾完 s3 后自动跟上，不用刷新');
+ok(ovRows[1].textContent.includes('0 / 1'), '对方的 0 / 1');
+ok($('ov-legend').children.length === 2, '两人都有任务 → 出 2 条图例');
+
+console.log('── 大任务：分段进度条 ──');
+const segBars = findAll($('tasks-cols'), (n) => /\bseg\b/.test(n.className));
+ok(segBars.length === 2, '两个大任务各一条分段进度条，实际 ' + segBars.length);
+const segs = findAll(segBars[0], (n) => /\bsq\b/.test(n.className));
+ok(segs.length === 3, '一个小任务一段 → 3 段，实际 ' + segs.length);
+ok(segs.filter((x) => /\bon\b/.test(x.className)).length === 3, '勾完后 3 段全点亮');
+ok(segs[0].title.includes('第 1 步') && segs[0].title.includes('第 1-4 讲'),
+  '每段悬停能看出是哪一步：' + segs[0].title);
+const segs2 = findAll(segBars[1], (n) => /\bsq\b/.test(n.className));
+ok(segs2.length === 1, '对方 1 个小任务 → 1 段');
+ok(segs2.filter((x) => /\bon\b/.test(x.className)).length === 0, '对方一段都没点亮');
+ok($('tasks-cols').textContent.includes('100%'), '百分比 100%（我的任务）');
+
+console.log('── 月行程表：跟着每天的完成情况走 ──');
+tabs[1].fire('click'); await tick();          // goals
+const Y = 2026, M = 9, DIM = 30, LEAD = new Date(Y, M - 1, 1).getDay();
+const CELLS = Math.ceil((LEAD + DIM) / 7) * 7;
+ok($('mo-head').children.length === 7, '星期表头 7 列');
+ok($('mo-grid').children.length === CELLS, '补满整周共 ' + CELLS + ' 格，实际 ' + $('mo-grid').children.length);
+ok($('mo-grid').children.filter((c) => !c.className.includes('blank')).length === DIM,
+  '非空格子 = 当月 ' + DIM + ' 天');
+const cell = (d) => $('mo-grid').children[LEAD + d - 1];
+ok(cell(1).textContent.includes('1'), '1 号落在第 ' + LEAD + ' 格（周' + ['日','一','二','三','四','五','六'][LEAD] + '）');
+const dcOf = (d) => { const k = findAll(cell(d), (n) => /\bdc\b/.test(n.className))[0]; return k ? k.textContent : ''; };
+const dmOf = (d) => { const k = findAll(cell(d), (n) => /\bdm\b/.test(n.className))[0]; return k ? k.textContent : ''; };
+ok(dcOf(20) === '1', '9/20 完成目标 → 记 1 件，实际「' + dcOf(20) + '」');
+ok(cell(20).className.includes('lv1'), '9/20 上色档位 lv1');
+ok(dcOf(21) === '1' && dcOf(22) === '1', '9/21、9/22 各完成 1 个小任务');
+ok(dcOf(23) === '', '9/23 只记了心情，没有完成数');
+ok(dmOf(23) === '😄', '9/23 心情 😄（mood 5），实际「' + dmOf(23) + '」');
+ok(dmOf(24) === '😕', '9/24 心情 😕（mood 2），实际「' + dmOf(24) + '」');
+ok(cell(20).title.includes('读完一本书'), '格子的悬停明细写了完成了什么：' +
+  cell(20).title.split('\n')[1]);
+ok(cell(21).title.includes('学完线性代数'), '小任务的悬停明细带上了所属大任务');
+
+const now = new Date();
+const inThisMonth = now.getFullYear() === Y && now.getMonth() === M - 1;
+if (inThisMonth) {
+  ok(cell(now.getDate()).className.includes('today'), '今天那格有描边');
+  ok(dcOf(now.getDate()) === '2', '刚勾完的 s3 + 标记完成的 g1 立刻出现在今天：' +
+    dcOf(now.getDate()) + ' 件');
+} else {
+  console.log('  ⏭  今天不在 ' + Y + '-' + M + '，跳过「今天」相关断言（不假造结果）');
+}
+
+console.log('── 月行程表：月份导航 / 图例 / 表格视图 ──');
+ok($('mo-nav').children.length === 3, '月份导航 3 个按钮');
+ok($('mo-nav').children[1].textContent.includes(Y + ' 年 ' + M + ' 月'), '中间显示当前月份');
+ok($('mo-nav').children[1].disabled === true, '已在本月时「回到本月」不可点');
+$('mo-nav').children[0].fire('click'); await tick();
+ok($('mo-nav').children[1].textContent.includes('8 月'), '点上月 → 2026 年 8 月');
+ok($('mo-grid').children.filter((c) => !c.className.includes('blank')).length === 31, '8 月 31 天');
+ok($('mo-grid').children.filter((c) => !c.className.includes('blank')).every((c) => !/\blv\d\b/.test(c.className)),
+  '8 月没有记录 → 一格都没上色');
+$('mo-nav').children[2].fire('click'); await tick();
+ok($('mo-nav').children[1].textContent.includes('9 月'), '点下月 → 回到 9 月');
+ok($('mo-legend').children.length === 4, '图例 4 档（无 / 1–2 / 3–5 / 6+），实际 ' + $('mo-legend').children.length);
+ok($('mo-legend').children[1].textContent.includes('1–2 件'), '图例文案说清楚深浅代表什么');
+ok($('mo-table').textContent.includes('2026-09-21'), '表格视图列出 9/21');
+ok($('mo-table').textContent.includes('第 1-4 讲'), '表格视图写出那天做了什么');
+ok($('mo-table').textContent.includes('😄'), '表格视图带心情');
+ok($('mo-sub').textContent.includes('这个月推进了'), '统计副标题：' + $('mo-sub').textContent);
+
+console.log('── 降级：库里还没加 done_at 列（她还没跑 setup-3-feed.sql）──');
+const s1row = DB.subtasks.find((x) => x.id === 's1');
+const keepAt = s1row.done_at;
+delete s1row.done_at;
+tabs[1].fire('click'); await tick();          // goals → 重渲染
+ok($('mo-warn').hidden === false, '给出「缺 done_at 列」的提示，而不是让日历凭空少一截');
+ok($('mo-warn').textContent.includes('setup-3-feed.sql'), '提示里指明了要跑哪个脚本');
+ok(dcOf(21) === '', '9/21 少了时间戳 → 从格子上消失（确认是缺列导致，不是算错）');
+s1row.done_at = keepAt;
+tabs[1].fire('click'); await tick();
+ok($('mo-warn').hidden === true, '补回时间戳后提示自动消失');
+ok(dcOf(21) === '1', '9/21 回到日历上');
+
+console.log('── 导出 ──');
+$('btn-export').fire('click'); await tick();
+ok(true, '导出没抛错');
+
+console.log('── CSS：[hidden] 必须是硬开关 ──');
+/* 回归测试：登录成功后登录页没消失、直接盖住主页。
+   根因是「作者样式表压过浏览器默认样式表」——
+   .login-wrap 写了 display:flex，于是浏览器默认的 [hidden]{display:none} 失效。
+   这里把不变量写死：只要有规则对 #view-login 命中并声明了 display，
+   就必须存在带 !important 的 [hidden] 兜底，否则 hidden 是哑的。 */
+const css = fs.readFileSync(path.join(DIR, 'app.css'), 'utf8');
+const guarded = /\[hidden\]\s*\{\s*display\s*:\s*none\s*!important/.test(css);
+// 先剥掉注释，否则注释里写的示例选择器会被当成真规则数进来
+const cssNoComment = css.replace(/\/\*[\s\S]*?\*\//g, '');
+const loginDisplayRules = [...cssNoComment.matchAll(/([^{}]+)\{([^}]*)\}/g)]
+  .filter((m) => /(^|;)\s*display\s*:/.test(m[2]))
+  .map((m) => m[1].split('\n').pop().trim())
+  .filter((sel) => /(\.login-wrap|#view-login)/.test(sel) && !/\[hidden\]/.test(sel));
+ok(guarded, 'app.css 有 [hidden]{display:none !important}');
+// （「登录后 view-login.hidden === true」在开头的「登录后落在主页」里已经测了行为，
+//   这里只测 CSS 侧的兜底条件，不重复凑数）
+ok(loginDisplayRules.length === 0 || guarded,
+  '有 ' + loginDisplayRules.length + ' 条规则对登录浮层写了 display，已被 [hidden] 兜住',
+  loginDisplayRules.join(' | '));
+
+console.log('── 登录报错能区分「账号不存在」和「邮箱没确认」──');
+ok(/email_not_confirmed/.test(fs.readFileSync(path.join(DIR, 'app.js'), 'utf8')),
+  '识别 email_not_confirmed，给出「去后台 Confirm email」的具体做法');
+
+console.log('');
+if (fails.length) { console.log('❌ ' + fails.length + ' 项没过：'); fails.forEach((f) => console.log('   - ' + f)); process.exit(1); }
+console.log('✅ 全部通过');
+process.exit(0);
