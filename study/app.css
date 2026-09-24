@@ -36,6 +36,15 @@
 }
 
 *{box-sizing:border-box}
+
+/* ⚠️ 必须有这一条，别删。
+   hidden 属性的隐藏效果来自浏览器默认样式表的 [hidden]{display:none}，
+   而作者样式表永远压过默认样式表 —— 所以任何被写了 display 的元素
+   （比如 .login-wrap{display:flex}）加了 hidden 也照样显示。
+   这条 !important 把 hidden 重新变成硬开关。
+   踩过的坑：登录成功后登录页不消失，直接盖住整个主页。 */
+[hidden]{display:none !important}
+
 html,body{margin:0;padding:0}
 body{
   background:var(--page); color:var(--text-primary);
@@ -82,11 +91,8 @@ button.tiny{padding:2px 8px;font-size:12px}
 button.block{width:100%;justify-content:center;margin-top:16px;padding:9px}
 button:disabled{opacity:.45;cursor:not-allowed}
 
-/* ── 登录 ── */
-.login-wrap{min-height:80vh;display:flex;align-items:center;justify-content:center}
-.login-card{width:100%;max-width:400px;margin:0}
-.login-card .field{margin-top:14px}
-.login-card h1{margin-bottom:2px}
+/* ── 登录 ──（样式在文件末尾的「登录页」段，这里不重复定义，
+   否则又会多出一条 display —— 见文件顶部 [hidden] 那条注释） */
 
 /* ── 页签 ── */
 .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;

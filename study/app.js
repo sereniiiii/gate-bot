@@ -1118,6 +1118,33 @@
   }
 
   /* ── 登录 / 启动 ───────────────────────────────────────────── */
+
+  /* 把 Supabase 的登录报错翻成能直接照着做的中文。
+     服务端为了防「邮箱枚举」，对「账号不存在」和「密码不对」故意返回同一个
+     invalid_credentials —— 这两者它不给区分，所以提示里必须两种都说。
+     但 email_not_confirmed 是可以区分的，这种情况账号一定存在。 */
+  function loginErrText(error) {
+    const msg  = (error && error.message) || '';
+    const code = (error && (error.code || error.error_code)) || '';
+    const all  = msg + ' ' + code;
+    let hint;
+    if (/email_not_confirmed|email not confirmed/i.test(all)) {
+      hint = '账号在，但这个邮箱还没确认过。去 Supabase 后台 → Authentication → Users，'
+           + '找到这一行，点右边 ⋯ 菜单里的 Confirm email。';
+    } else if (/invalid_credentials|invalid login credentials/i.test(all)) {
+      hint = '账号不存在，或者密码不对。（服务端故意不区分这两种，防止别人试出哪个邮箱注册过）';
+    } else if (/email_address_invalid|invalid.*email|unable to validate email/i.test(all)) {
+      hint = '邮箱格式不对，检查有没有多打空格。';
+    } else if (/rate|too many|over_email_send/i.test(all)) {
+      hint = '试太多次被限流了，等几分钟再试。';
+    } else if (/failed to fetch|network|load failed/i.test(all)) {
+      hint = '连不上 Supabase。挂上代理/换个网络，或者刷新重试。';
+    } else {
+      hint = msg || '登录失败，原因未知。';
+    }
+    return code ? hint + '［' + code + '］' : hint;
+  }
+
   function showApp(user) {
     S.me = user;
     S.tab = 'home';
@@ -1170,8 +1197,7 @@
       btn.disabled = false;
       btn.textContent = '登录';
       if (error) {
-        err.textContent = error.message === 'Invalid login credentials'
-          ? '邮箱或密码不对。' : error.message;
+        err.textContent = loginErrText(error);
         err.hidden = false;
         return;
       }
