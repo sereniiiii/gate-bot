@@ -1,0 +1,1327 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>体重记录 · Weight Log</title>
+<style>
+/* ── 调色板 ────────────────────────────────────────────────────────────────
+   取值来自 dataviz 规范的 reference palette，已用 validate_palette.js 校验：
+   浅色 worst CVD ΔE 24.7 / 深色 26.8，六项全 PASS。改色请重跑校验脚本。
+   深色值在两个作用域各写一遍：媒体查询管系统设置，data-theme 管手动切换。 */
+:root{
+  color-scheme: light;
+  --surface-1:#fcfcfb; --page:#f9f9f7;
+  --text-primary:#0b0b0b; --text-secondary:#52514e; --muted:#898781;
+  --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
+  --series-1:#2a78d6;   /* 体重（散点） */
+  --series-2:#eb6834;   /* 7日均线 */
+  --good:#006300; --critical:#d03b3b;
+  --chip:#f2f1ed; --shadow:0 1px 2px rgba(11,11,11,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:where(:not([data-theme="light"])){
+    color-scheme: dark;
+    --surface-1:#1a1a19; --page:#0d0d0d;
+    --text-primary:#ffffff; --text-secondary:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+    --series-1:#3987e5; --series-2:#d95926;
+    --good:#0ca30c; --critical:#d03b3b;
+    --chip:#242422; --shadow:none;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --surface-1:#1a1a19; --page:#0d0d0d;
+  --text-primary:#ffffff; --text-secondary:#c3c2b7; --muted:#898781;
+  --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,0.10);
+  --series-1:#3987e5; --series-2:#d95926;
+  --good:#0ca30c; --critical:#d03b3b;
+  --chip:#242422; --shadow:none;
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--page); color:var(--text-primary);
+  font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  font-size:14px; line-height:1.55; padding:24px 16px 64px;
+}
+.wrap{max-width:1060px;margin:0 auto}
+h1{font-size:19px;margin:0;font-weight:650;letter-spacing:-.01em}
+h2{font-size:14px;margin:0 0 12px;font-weight:650}
+.sub{color:var(--muted);font-size:12.5px;margin:4px 0 0}
+
+header.top{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+header.top .grow{flex:1;min-width:200px}
+
+.card{
+  background:var(--surface-1); border:1px solid var(--border);
+  border-radius:12px; padding:18px; box-shadow:var(--shadow); margin-bottom:16px;
+}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.row.tight{align-items:center}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+
+label.f{display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;font-weight:550}
+input[type=text],input[type=number],input[type=date],select,textarea{
+  font:inherit;font-size:13.5px;color:var(--text-primary);background:var(--page);
+  border:1px solid var(--border);border-radius:8px;padding:7px 10px;width:100%;
+  font-variant-numeric:tabular-nums;
+}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--series-1);outline-offset:1px;border-color:transparent}
+input[type=number]{max-width:130px}
+input[type=date]{max-width:170px}
+
+button{
+  font:inherit;font-size:13px;font-weight:550;color:var(--text-primary);
+  background:var(--surface-1);border:1px solid var(--border);border-radius:8px;
+  padding:7px 13px;cursor:pointer;
+}
+button:hover{background:var(--chip)}
+button.primary{background:var(--series-1);border-color:var(--series-1);color:#fff}
+button.primary:hover{filter:brightness(1.08)}
+button.danger{color:var(--critical);border-color:var(--critical)}
+button.tiny{padding:2px 8px;font-size:12px}
+button.on{background:var(--chip);border-color:var(--axis);font-weight:650}
+button:disabled{opacity:.45;cursor:not-allowed}
+
+/* 统计条 */
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:12px;margin-bottom:16px}
+.tile{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:13px 14px;box-shadow:var(--shadow)}
+.tile .k{font-size:11.5px;color:var(--muted);font-weight:550;letter-spacing:.01em}
+.tile .v{font-size:23px;font-weight:640;margin-top:3px;letter-spacing:-.02em}
+.tile .v small{font-size:12px;font-weight:500;color:var(--muted);margin-left:3px;letter-spacing:0}
+.tile .d{font-size:11.5px;color:var(--text-secondary);margin-top:2px}
+
+/* 图例 */
+.legend{display:flex;gap:18px;flex-wrap:wrap;align-items:center;margin-bottom:6px;font-size:12.5px;color:var(--text-secondary)}
+.legend .item{display:inline-flex;align-items:center;gap:7px}
+.legend .kdot{width:9px;height:9px;border-radius:50%;background:var(--series-1);flex:0 0 auto}
+.legend .kline{width:16px;height:2px;border-radius:1px;background:var(--series-2);flex:0 0 auto}
+
+.chartbox{position:relative}
+svg.chart{display:block;width:100%;height:auto;overflow:visible}
+svg.chart text{font-family:inherit;font-size:11px;fill:var(--muted);font-variant-numeric:tabular-nums}
+svg.chart .axis-label{fill:var(--muted)}
+svg.chart .endlabel{font-size:11.5px;font-weight:640}
+
+#tip{
+  position:absolute;pointer-events:none;z-index:9;opacity:0;transition:opacity .08s;
+  background:var(--surface-1);border:1px solid var(--border);border-radius:9px;
+  padding:8px 11px;box-shadow:0 4px 14px rgba(0,0,0,.16);min-width:132px;
+}
+#tip .td{font-size:11.5px;color:var(--muted);margin-bottom:5px;font-variant-numeric:tabular-nums}
+#tip .tr{display:flex;align-items:center;gap:7px;margin-top:3px}
+#tip .tk{width:14px;height:2px;border-radius:1px;flex:0 0 auto}
+#tip .tn{font-size:11.5px;color:var(--text-secondary);flex:1}
+#tip .tv{font-size:13px;font-weight:640;font-variant-numeric:tabular-nums}
+
+/* 打卡 */
+.tasks{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px}
+.tasks label{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-secondary);
+  padding:7px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer}
+.tasks label:hover{background:var(--chip)}
+.tasks input{width:16px;height:16px;accent-color:var(--series-1);margin:0;flex:0 0 auto}
+
+/* 表格 */
+table{width:100%;border-collapse:collapse;font-size:13px;font-variant-numeric:tabular-nums}
+th{text-align:left;font-size:11.5px;color:var(--muted);font-weight:600;padding:6px 8px;
+   border-bottom:1px solid var(--axis);white-space:nowrap}
+td{padding:7px 8px;border-bottom:1px solid var(--grid);vertical-align:top}
+td.num{text-align:right}
+tr:last-child td{border-bottom:none}
+.tblwrap{overflow-x:auto}
+
+details{border:1px solid var(--border);border-radius:10px;padding:10px 14px;background:var(--surface-1)}
+details+details{margin-top:10px}
+summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--text-primary)}
+details[open] summary{margin-bottom:11px}
+
+.frozen{color:var(--series-1);font-weight:600}
+.pill{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:20px;
+  background:var(--chip);color:var(--text-secondary);border:1px solid var(--border);white-space:nowrap}
+.pill.warn{color:var(--critical);border-color:var(--critical)}
+.pill.ok{color:var(--good);border-color:var(--good)}
+
+.note{font-size:12.5px;color:var(--text-secondary);margin:10px 0 0;padding-left:10px;border-left:2px solid var(--grid)}
+.empty{color:var(--muted);font-size:13px;padding:14px 0;text-align:center}
+.banner{font-size:12.5px;padding:9px 12px;border-radius:9px;border:1px solid var(--border);
+  background:var(--chip);color:var(--text-secondary);margin-bottom:14px}
+.banner.warn{border-color:var(--critical);color:var(--critical)}
+code{font-size:12px;background:var(--chip);padding:1px 5px;border-radius:5px}
+.hint{font-size:11.5px;color:var(--muted);margin-top:5px}
+.sep{height:1px;background:var(--grid);margin:14px 0}
+.spacer{flex:1}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <div class="grow">
+      <h1>体重记录</h1>
+      <p class="sub">数据只存在这台电脑的浏览器里（localStorage）。清浏览器数据 = 全丢，所以请定期点「导出备份」。</p>
+    </div>
+    <div class="row tight">
+      <button id="btn-theme" title="切换浅色/深色">主题：跟随系统</button>
+      <button id="btn-export">导出备份</button>
+      <button id="btn-import">导入</button>
+      <input type="file" id="file-import" accept=".json,application/json" hidden>
+    </div>
+  </header>
+
+  <div id="backup-warn"></div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <!-- ── 录入 ── -->
+  <div class="card">
+    <h2>今日录入</h2>
+    <div class="row">
+      <div><label class="f" for="in-date">日期</label><input type="date" id="in-date"></div>
+      <div><label class="f" for="in-weight">体重（kg）</label><input type="number" id="in-weight" step="0.01" min="20" max="400" placeholder="62.40"></div>
+      <div style="flex:1;min-width:180px"><label class="f" for="in-note">备注（可选）</label><input type="text" id="in-note" placeholder="昨晚吃咸了 / 经期 / 出差"></div>
+      <button class="primary" id="btn-save">保存</button>
+      <button id="btn-freeze" title="生病、经期、出差等：标记当天为冻结日，当天不参与任何惩罚判定">冻结日</button>
+    </div>
+    <p class="hint" id="entry-hint"></p>
+  </div>
+
+  <!-- ── 趋势图 ── -->
+  <div class="card">
+    <div class="row tight" style="margin-bottom:12px">
+      <h2 style="margin:0">趋势</h2>
+      <div class="spacer"></div>
+      <button class="tiny" data-range="30">近 30 天</button>
+      <button class="tiny" data-range="90">近 90 天</button>
+      <button class="tiny" data-range="all">全部</button>
+    </div>
+    <div class="legend">
+      <span class="item"><span class="kdot"></span>每日体重</span>
+      <span class="item"><span class="kline"></span>7 日均线（看这条，别看单日）</span>
+    </div>
+    <div class="chartbox">
+      <svg class="chart" id="chart" viewBox="0 0 760 320" preserveAspectRatio="xMidYMid meet" role="img"
+           aria-label="体重与 7 日均线趋势图，完整数值见下方表格视图"></svg>
+      <div id="tip" aria-hidden="true"></div>
+    </div>
+    <p class="note">单日体重浮动 ±1~2kg 主要来自水分、糖原、盐分和经期，跟脂肪无关。所以惩罚只认 7 日均线的周环比，不认单日涨跌。</p>
+    <details style="margin-top:14px">
+      <summary>表格视图（键盘可达，不依赖悬停）</summary>
+      <div class="tblwrap"><table id="tbl-chart"><thead><tr>
+        <th>日期</th><th>体重 (kg)</th><th>7 日均线 (kg)</th><th>较前一日</th><th>备注</th>
+      </tr></thead><tbody></tbody></table></div>
+    </details>
+  </div>
+
+  <!-- ── 打卡 ── -->
+  <div class="card">
+    <h2>今日打卡 <span class="pill" id="check-count">0/0</span></h2>
+    <div class="tasks" id="tasks"></div>
+    <p class="hint">打卡只做记录，不扣分、不罚款 —— 惩罚只由下面两个模块产生。</p>
+  </div>
+
+  <!-- ── 结算 ── -->
+  <div class="card">
+    <h2>周结算</h2>
+    <p class="hint" style="margin-top:0">比较「今天往前 7 天的均值」和「再往前 7 天的均值」。涨超过阈值才触发。点一下先看建议，确认后才入账。</p>
+    <div class="row" style="margin-top:10px">
+      <button class="primary" id="btn-settle">跑一次结算</button>
+      <span class="hint" id="settle-meta" style="margin:0"></span>
+    </div>
+    <div id="settle-out"></div>
+  </div>
+
+  <!-- ── 惩罚账本 ── -->
+  <div class="card">
+    <h2>惩罚账本 <span class="pill" id="pool-pill">待捐 ¥0</span></h2>
+    <div id="ledger-body"></div>
+    <div class="sep"></div>
+    <div class="row tight">
+      <button id="btn-payout">结算清零（捐出/转给监督人）</button>
+      <button id="btn-manual-fine">手动加一笔罚款</button>
+      <div class="spacer"></div>
+      <span class="hint" style="margin:0" id="ledger-meta"></span>
+    </div>
+  </div>
+
+  <!-- ── 围度 / 体脂 ── -->
+  <div class="card">
+    <h2>围度 / 体脂（周记录）</h2>
+    <div class="row">
+      <div><label class="f" for="m-date">日期</label><input type="date" id="m-date"></div>
+      <div><label class="f" for="m-waist">腰围 cm</label><input type="number" id="m-waist" step="0.1" placeholder="70.0"></div>
+      <div><label class="f" for="m-hip">臀围 cm</label><input type="number" id="m-hip" step="0.1" placeholder="94.0"></div>
+      <div><label class="f" for="m-thigh">大腿 cm</label><input type="number" id="m-thigh" step="0.1" placeholder="52.0"></div>
+      <div><label class="f" for="m-fat">体脂 %</label><input type="number" id="m-fat" step="0.1" placeholder="28.0"></div>
+      <button class="primary" id="btn-measure">记录</button>
+    </div>
+    <div class="tblwrap" style="margin-top:14px"><table id="tbl-measure"><thead><tr>
+      <th>日期</th><th class="num">腰围</th><th class="num">臀围</th><th class="num">大腿</th><th class="num">体脂</th><th class="num">腰围变化</th><th></th>
+    </tr></thead><tbody></tbody></table></div>
+  </div>
+
+  <!-- ── 设置 ── -->
+  <div class="card">
+    <h2>设置</h2>
+    <div class="grid2">
+      <div>
+        <h2 style="font-size:12.5px;color:var(--text-secondary);margin-bottom:8px">惩罚参数</h2>
+        <div class="row">
+          <div><label class="f" for="cfg-fine">单次罚款（元）</label><input type="number" id="cfg-fine" min="1" max="50" step="1"></div>
+          <div><label class="f" for="cfg-cap">单日罚款上限（元）</label><input type="number" id="cfg-cap" min="1" max="50" step="1"></div>
+          <div><label class="f" for="cfg-thr">周环比阈值（kg）</label><input type="number" id="cfg-thr" min="0.1" max="3" step="0.1"></div>
+          <div><label class="f" for="cfg-miss">连续未记录天数</label><input type="number" id="cfg-miss" min="1" max="14" step="1"></div>
+        </div>
+        <p class="hint">单笔硬上限 ¥50 写死在代码里，不可调；单日合计超上限时自动截断。</p>
+      </div>
+      <div>
+        <h2 style="font-size:12.5px;color:var(--text-secondary);margin-bottom:8px">模块开关</h2>
+        <div class="row">
+          <button id="mod-finePool">罚款池</button>
+          <button id="mod-deprivation">剥夺娱乐</button>
+        </div>
+        <p class="hint">关掉的模块不参与结算，账本里已有的记录不会被删除。</p>
+        <div class="sep"></div>
+        <button class="danger" id="btn-reset">清空全部数据…</button>
+        <p class="hint">会先让你导出备份，再二次确认。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="background:transparent;border-style:dashed">
+    <h2 style="font-size:12.5px">护栏（写死在代码里，不可关闭）</h2>
+    <table><tbody>
+      <tr><td style="width:150px">不许扣饭 / 禁食</td><td>惩罚只能作用在钱、娱乐时间、劳动上，禁止任何与进食相关的惩罚项。</td></tr>
+      <tr><td>不许羞辱</td><td>惩罚文案全部由系统从固定清单里生成，不读取、不接受自定义侮辱性内容。</td></tr>
+      <tr><td>单日封顶</td><td>一天内所有罚款合计不超过设定的单日上限，单笔硬顶 ¥50，避免雪崩式摆烂。</td></tr>
+      <tr><td>冻结日</td><td>随时可标记。冻结当天不产生任何惩罚；一周内冻结 ≥3 天则整周结算跳过。</td></tr>
+    </tbody></table>
+  </div>
+
+</div>
+
+<script>
+(function(){
+'use strict';
+
+/* ── 常量 ─────────────────────────────────────────────────────────────── */
+var STORAGE_KEY = 'weight-tracker.v1';
+var MAX_FINE = 50;          // 硬上限：任何单笔罚款都不得超过这个数，代码层面不可调
+var MA_WINDOW = 7;          // 7 日均线
+var MA_MIN_DAYS = 4;        // 7 天里至少要有 4 天有数据才给均线值，否则均线会被一两天带偏
+var FREEZE_SKIP = 3;        // 一周内冻结 ≥ 这个天数 → 整周结算跳过
+
+var DEPRIVATION_POOL = [    // 剥夺项固定清单。惩罚文案不来自用户输入，避免出现伤害性内容。
+  '今晚不刷短视频',
+  '今晚不追剧 / 不看番',
+  '明早提前 30 分钟起床',
+  '周末手机不进卧室',
+  '这周少点一次外卖'
+];
+
+var DEFAULT_TASKS = [
+  {id:'water',    name:'喝够 1.5L 水'},
+  {id:'sleep',    name:'睡够 7 小时'},
+  {id:'steps',    name:'走够 8000 步'},
+  {id:'exercise', name:'运动 20 分钟以上'},
+  {id:'nosnack',  name:'不吃宵夜'}
+];
+
+/* ── 日期工具（一律本地时区，避免 UTC 串日期） ───────────────────────── */
+function pad(n){ return String(n).padStart(2,'0'); }
+function toStr(d){ return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); }
+function today(){ return toStr(new Date()); }
+function parseD(s){ var p=s.split('-'); return new Date(+p[0], +p[1]-1, +p[2]); }
+function addDays(s,n){ var d=parseD(s); d.setDate(d.getDate()+n); return toStr(d); }
+function daysBetween(a,b){ return Math.round((parseD(b)-parseD(a))/86400000); }
+function fmtDate(s){ var p=s.split('-'); return p[0]+'-'+p[1]+'-'+p[2]; }
+function fmtShort(s){ var p=s.split('-'); return (+p[1])+'/'+(+p[2]); }
+
+/* ── 状态 ─────────────────────────────────────────────────────────────── */
+function blank(){
+  return {
+    version: 1,
+    config: {
+      fineAmount: 20,
+      dailyFineCap: 40,
+      weeklyGainThreshold: 0.3,
+      missRecordStreak: 3,
+      modules: { finePool: true, deprivation: true },
+      behaviorTasks: DEFAULT_TASKS.slice(),
+      theme: 'auto',
+      lastExport: null,
+      escalation: 0     // 连续触发结算的次数，用于阶梯升级
+    },
+    entries: {},        // 'YYYY-MM-DD' -> {weight, note, frozen, freezeReason, checks:{}}
+    measurements: [],   // {date, waist, hip, thigh, fat}
+    ledger: []          // {id, date, kind:'fine'|'payout'|'deprivation', amount, label, detail, status, ts}
+  };
+}
+
+var state = blank();
+var storageOK = true;
+
+function load(){
+  try{
+    var raw = localStorage.getItem(STORAGE_KEY);
+    if(!raw) return;
+    var obj = JSON.parse(raw);
+    if(!obj || typeof obj !== 'object') return;
+    var b = blank();
+    state = {
+      version: 1,
+      config: Object.assign(b.config, obj.config || {}),
+      entries: obj.entries || {},
+      measurements: Array.isArray(obj.measurements) ? obj.measurements : [],
+      ledger: Array.isArray(obj.ledger) ? obj.ledger : []
+    };
+    state.config.modules = Object.assign(b.config.modules, (obj.config||{}).modules || {});
+    if(!Array.isArray(state.config.behaviorTasks) || !state.config.behaviorTasks.length)
+      state.config.behaviorTasks = DEFAULT_TASKS.slice();
+  }catch(e){
+    console.warn('读取本地数据失败：', e);
+    storageOK = false;
+  }
+}
+function save(){
+  if(!storageOK) return;
+  try{
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }catch(e){
+    storageOK = false;
+    alert('写入本地存储失败（可能是浏览器隐私模式或空间已满）。\n数据这次没保存成功，请立刻点「导出备份」另存一份。');
+  }
+}
+
+/* ── 计算 ─────────────────────────────────────────────────────────────── */
+function entryOf(d){ return state.entries[d] || null; }
+
+function weightOf(d){
+  var e = state.entries[d];
+  return (e && typeof e.weight === 'number' && isFinite(e.weight)) ? e.weight : null;
+}
+
+// 7 日均线：以 d 为终点往前数 7 个自然日，取其中有记录的天求平均
+function maAt(d){
+  var vals = [], w;
+  for(var i=0;i<MA_WINDOW;i++){
+    w = weightOf(addDays(d, -i));
+    if(w !== null) vals.push(w);
+  }
+  if(vals.length < MA_MIN_DAYS) return null;
+  var s = 0; for(var j=0;j<vals.length;j++) s += vals[j];
+  return s / vals.length;
+}
+
+// 连续未记录天数（含当天往前数）
+function missStreak(d){
+  var n = 0, cur = d;
+  for(var i=0;i<400;i++){
+    var e = state.entries[cur];
+    if(e && (typeof e.weight === 'number' || e.frozen)) break;
+    n++;
+    cur = addDays(cur, -1);
+  }
+  return n;
+}
+
+function frozenCountBetween(a,b){
+  var n = 0, cur = a, guard = 0;
+  while(cur <= b && guard++ < 400){
+    var e = state.entries[cur];
+    if(e && e.frozen) n++;
+    cur = addDays(cur, 1);
+  }
+  return n;
+}
+
+function poolBalance(){
+  var t = 0;
+  for(var i=0;i<state.ledger.length;i++){
+    var r = state.ledger[i];
+    if(r.kind === 'fine' && r.status !== 'settled') t += r.amount;
+  }
+  return Math.round(t*100)/100;
+}
+
+function recordStreak(d){
+  var n = 0, cur = d, guard = 0;
+  while(guard++ < 400){
+    var e = state.entries[cur];
+    if(!e) break;
+    if(typeof e.weight !== 'number' && !e.frozen) break;
+    n++; cur = addDays(cur, -1);
+  }
+  return n;
+}
+
+function visibleDates(range){
+  var all = Object.keys(state.entries).filter(function(d){
+    var e = state.entries[d];
+    return e && (typeof e.weight === 'number' || e.frozen);
+  }).sort();
+  if(!all.length) return [];
+  if(range === 'all') return all;
+  var start = addDays(today(), -(range-1));
+  return all.filter(function(d){ return d >= start; });
+}
+
+/* ── 惩罚引擎 ─────────────────────────────────────────────────────────── */
+function nextFineAmount(){
+  var base = Math.max(1, Math.min(MAX_FINE, +state.config.fineAmount || 20));
+  var esc = Math.max(0, state.config.escalation || 0);
+  return Math.max(1, Math.min(MAX_FINE, base * (esc + 1)));
+}
+
+function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36); }
+
+function addFine(date, label, detail, amount){
+  // 同一天同一标签只记一次，避免重复结算刷出多笔
+  for(var i=0;i<state.ledger.length;i++){
+    var r = state.ledger[i];
+    if(r.kind === 'fine' && r.date === date && r.label === label) return null;
+  }
+  // 单日封顶：把当天已有罚款算进来，超出部分截断
+  var cap = Math.max(1, Math.min(MAX_FINE, +state.config.dailyFineCap || 40));
+  var used = 0;
+  for(var k=0;k<state.ledger.length;k++){
+    var q = state.ledger[k];
+    if(q.kind === 'fine' && q.date === date) used += q.amount;
+  }
+  var amt = Math.max(0, Math.min(amount, cap - used));
+  if(amt <= 0) return null;
+  var rec = { id:uid(), date:date, kind:'fine', amount:amt, label:label, detail:detail||'', status:'pending', ts:Date.now() };
+  state.ledger.push(rec);
+  return rec;
+}
+
+function addDeprivation(date, detail){
+  for(var i=0;i<state.ledger.length;i++){
+    var r = state.ledger[i];
+    if(r.kind === 'deprivation' && r.date === date) return null;
+  }
+  var idx = (daysBetween('2020-01-01', date) % DEPRIVATION_POOL.length + DEPRIVATION_POOL.length) % DEPRIVATION_POOL.length;
+  var rec = { id:uid(), date:date, kind:'deprivation', amount:0,
+              label:DEPRIVATION_POOL[idx], detail:detail||'', status:'pending', ts:Date.now() };
+  state.ledger.push(rec);
+  return rec;
+}
+
+// 只算建议，不写状态。返回 {skipped, reason, items:[]}
+function computeSettlement(asOf){
+  var items = [], cfg = state.config;
+
+  var frozen = frozenCountBetween(addDays(asOf, -(MA_WINDOW-1)), asOf);
+  if(frozen >= FREEZE_SKIP){
+    return { skipped:true, reason:'这一周冻结了 '+frozen+' 天（≥'+FREEZE_SKIP+'），整周结算跳过。', items:[] };
+  }
+
+  var ma     = maAt(asOf);
+  var maPrev = maAt(addDays(asOf, -MA_WINDOW));
+
+  if(ma !== null && maPrev !== null){
+    var diff = ma - maPrev;
+    if(diff > cfg.weeklyGainThreshold){
+      var amt = nextFineAmount();
+      if(cfg.modules.finePool){
+        items.push({ kind:'fine', label:'7 日均线上行', amount:amt,
+          detail:'7 日均线 '+maPrev.toFixed(2)+' → '+ma.toFixed(2)+' kg（+' + diff.toFixed(2) +
+                 '，超过阈值 '+cfg.weeklyGainThreshold+' kg）' });
+      }
+      if(cfg.modules.deprivation){
+        items.push({ kind:'deprivation', label:'剥夺娱乐',
+          detail:'7 日均线上行触发的次日剥夺项（未执行则自动升级为一笔罚款）' });
+      }
+    }
+  } else if(ma === null || maPrev === null){
+    items.push({ kind:'info', label:'数据不足', detail:'两个 7 天窗口里各需至少 '+MA_MIN_DAYS+' 天记录，目前凑不齐，本次跳过趋势判定。' });
+  }
+
+  var miss = missStreak(asOf);
+  if(miss >= cfg.missRecordStreak && cfg.modules.finePool){
+    items.push({ kind:'fine', label:'连续 '+miss+' 天未记录', amount:nextFineAmount(),
+      detail:'连续 '+miss+' 天没有记录体重，超过设定阈值 '+cfg.missRecordStreak+' 天。' });
+  }
+
+  return { skipped:false, reason:'', items:items, ma:ma, maPrev:maPrev, miss:miss, frozen:frozen };
+}
+
+/* ── 渲染：统计条 ─────────────────────────────────────────────────────── */
+function renderTiles(){
+  var t = today();
+  var w = weightOf(t);
+  var ma = maAt(t), maPrev = maAt(addDays(t, -MA_WINDOW));
+  var bal = poolBalance();
+  var streak = recordStreak(t);
+  var e = entryOf(t);
+
+  var html = '';
+  html += tile('今日体重', w === null ? '—' : w.toFixed(2), 'kg',
+               e && e.frozen ? '<span class="frozen">已冻结：'+(e.freezeReason||'未填原因')+'</span>' : (e ? '' : '今天还没记录'));
+  html += tile('7 日均线', ma === null ? '—' : ma.toFixed(2), 'kg', '看趋势，别看单日');
+
+  var deltaTxt = '—', deltaSub = '需要两个 7 天窗口的数据';
+  if(ma !== null && maPrev !== null){
+    var d = ma - maPrev;
+    var sign = d > 0 ? '+' : '';
+    deltaTxt = sign + d.toFixed(2);
+    // 涨 = 差（critical，↓方向由文字承载）；跌 = 好（good）。图标+文字+颜色三重编码，不靠颜色单独表意。
+    deltaSub = '<span style="color:var(--'+(d>0?'critical':'good')+')">'+(d>0?'↑ 上行↑':'↓ 下行')+'</span> · 对比上周同期';
+  }
+  html += tile('周环比', deltaTxt, 'kg', deltaSub);
+
+  html += tile('连续记录', String(streak), '天', streak >= 7 ? '保持住' : '目标先到 7 天');
+  html += tile('待捐余额', '¥' + bal.toFixed(0), '', bal > 0 ? '满月后清零' : '池子干净');
+
+  document.getElementById('tiles').innerHTML = html;
+}
+function tile(k, v, unit, d){
+  return '<div class="tile"><div class="k">'+k+'</div><div class="v">'+v+
+         (unit ? '<small>'+unit+'</small>' : '')+'</div>'+(d ? '<div class="d">'+d+'</div>' : '')+'</div>';
+}
+
+/* ── 渲染：图表 ───────────────────────────────────────────────────────── */
+var chartRange = 90;
+
+function renderChart(){
+  var svg = document.getElementById('chart');
+  var dates = visibleDates(chartRange);
+  Array.prototype.forEach.call(document.querySelectorAll('[data-range]'), function(b){
+    b.classList.toggle('on', String(chartRange) === b.getAttribute('data-range'));
+  });
+
+  var NS = 'http://www.w3.org/2000/svg';
+  var W = 760, H = 320, PAD = { l:46, r:58, t:18, b:32 };
+  var iw = W - PAD.l - PAD.r, ih = H - PAD.t - PAD.b;
+
+  svg.innerHTML = '';
+  if(dates.length < 1){
+    var t = document.createElementNS(NS,'text');
+    t.setAttribute('x', W/2); t.setAttribute('y', H/2);
+    t.setAttribute('text-anchor','middle'); t.setAttribute('class','axis-label');
+    t.textContent = '还没有数据 —— 在上面「今日录入」里存一条就出图了';
+    svg.appendChild(t);
+    document.getElementById('tbl-chart').querySelector('tbody').innerHTML =
+      '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
+    return;
+  }
+
+  var series = dates.map(function(d){ return { d:d, w:weightOf(d), ma:maAt(d) }; });
+
+  var vals = [];
+  series.forEach(function(p){
+    if(p.w !== null) vals.push(p.w);
+    if(p.ma !== null) vals.push(p.ma);
+  });
+  var lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  if(hi - lo < 2){ var mid = (hi+lo)/2; lo = mid-1; hi = mid+1; }
+  var padY = (hi-lo)*0.12;
+  lo -= padY; hi += padY;
+
+  // X：按「日期序号」等距，不按索引 —— 缺记录的日子留出空白，不做等距插值
+  var allDays = [];
+  var cur = dates[0], guard = 0;
+  while(cur <= dates[dates.length-1] && guard++ < 4000){ allDays.push(cur); cur = addDays(cur,1); }
+  var idxOf = {};
+  allDays.forEach(function(d,i){ idxOf[d] = i; });
+
+  function X(d){ return PAD.l + (allDays.length === 1 ? iw/2 : (idxOf[d]/(allDays.length-1))*iw); }
+  function Y(v){ return PAD.t + ih - ((v-lo)/(hi-lo))*ih; }
+
+  function el(name, attrs){
+    var n = document.createElementNS(NS, name);
+    for(var k in attrs) n.setAttribute(k, attrs[k]);
+    return n;
+  }
+
+  // 网格 + Y 轴刻度
+  var step = niceStep((hi-lo)/4);
+  var tick = Math.ceil(lo/step)*step;
+  for(var v = tick; v <= hi + 1e-9; v += step){
+    var y = Y(v);
+    if(y < PAD.t - 1 || y > PAD.t + ih + 1) continue;
+    svg.appendChild(el('line', { x1:PAD.l, x2:PAD.l+iw, y1:y, y2:y,
+      stroke:'var(--grid)', 'stroke-width':1, 'shape-rendering':'crispEdges' }));
+    var lab = el('text', { x:PAD.l-8, y:y+3.5, 'text-anchor':'end', class:'axis-label' });
+    lab.textContent = v.toFixed(1);
+    svg.appendChild(lab);
+  }
+  // 基线
+  svg.appendChild(el('line', { x1:PAD.l, x2:PAD.l+iw, y1:PAD.t+ih, y2:PAD.t+ih,
+    stroke:'var(--axis)', 'stroke-width':1, 'shape-rendering':'crispEdges' }));
+
+  // X 轴刻度：最多 7 个
+  var maxLab = 7;
+  var everyN = Math.max(1, Math.ceil(allDays.length/maxLab));
+  allDays.forEach(function(d,i){
+    if(i % everyN !== 0 && i !== allDays.length-1) return;
+    var lab = el('text', { x:X(d), y:PAD.t+ih+18, 'text-anchor':'middle', class:'axis-label' });
+    lab.textContent = fmtShort(d);
+    svg.appendChild(lab);
+  });
+
+  // 7 日均线：2px，遇缺测断开成独立折线段
+  var seg = [];
+  function flushSeg(){
+    if(seg.length >= 2){
+      svg.appendChild(el('polyline', {
+        points: seg.map(function(p){ return X(p.d)+','+Y(p.ma); }).join(' '),
+        fill:'none', stroke:'var(--series-2)', 'stroke-width':2,
+        'stroke-linejoin':'round', 'stroke-linecap':'round'
+      }));
+    } else if(seg.length === 1){
+      svg.appendChild(el('circle', { cx:X(seg[0].d), cy:Y(seg[0].ma), r:3,
+        fill:'var(--series-2)', stroke:'var(--surface-1)', 'stroke-width':2 }));
+    }
+    seg = [];
+  }
+  series.forEach(function(p){
+    if(p.ma !== null) seg.push(p); else flushSeg();
+  });
+  flushSeg();
+
+  // 每日体重：8px 圆点 + 2px 表面描边。不连线 —— 单日噪声不该被画成一条连续的线。
+  series.forEach(function(p){
+    if(p.w === null) return;
+    svg.appendChild(el('circle', { cx:X(p.d), cy:Y(p.w), r:4,
+      fill:'var(--series-1)', stroke:'var(--surface-1)', 'stroke-width':2 }));
+  });
+
+  // 末端直接标注（≥2 系列必须有图例，且 ≤4 系列要直接标注）
+  var lastW = null, lastMa = null;
+  for(var i=series.length-1;i>=0;i--){
+    if(lastW === null && series[i].w !== null) lastW = series[i];
+    if(lastMa === null && series[i].ma !== null) lastMa = series[i];
+  }
+  var lastX = X(allDays[allDays.length-1]);
+  var place = [];
+  if(lastW) place.push({ p:lastW, v:lastW.w, color:'var(--series-1)' });
+  if(lastMa) place.push({ p:lastMa, v:lastMa.ma, color:'var(--series-2)' });
+  place.sort(function(a,b){ return Y(a.v) - Y(b.v); });
+  if(place.length === 2 && Math.abs(Y(place[0].v) - Y(place[1].v)) < 13){
+    var anchor = Y(place[0].v);
+    place[0].ly = anchor - 7;
+    place[1].ly = anchor + 14;
+  } else {
+    place.forEach(function(o){ o.ly = Y(o.v) + 4; });
+  }
+  place.forEach(function(o){
+    var t = el('text', { x:lastX+11, y:o.ly, class:'endlabel', fill:o.color });
+    t.textContent = o.v.toFixed(1);
+    svg.appendChild(t);
+  });
+
+  // 悬停层：一条覆盖整个绘图区的透明矩形，十字准线吸附到最近的数据点
+  var hit = el('rect', { x:PAD.l, y:PAD.t, width:iw, height:ih, fill:'transparent', style:'cursor:crosshair' });
+  var cross = el('line', { x1:0, x2:0, y1:PAD.t, y2:PAD.t+ih,
+    stroke:'var(--axis)', 'stroke-width':1, opacity:0, 'shape-rendering':'crispEdges' });
+  svg.appendChild(cross);
+  svg.appendChild(hit);
+
+  var tip = document.getElementById('tip');
+  var box = svg.parentNode;
+
+  function nearest(clientX){
+    var r = svg.getBoundingClientRect();
+    var sx = (clientX - r.left) / r.width * W;   // 换算回 viewBox 坐标
+    var best = 0, bd = Infinity;
+    allDays.forEach(function(d,i){
+      var dist = Math.abs(X(d) - sx);
+      if(dist < bd){ bd = dist; best = i; }
+    });
+    return allDays[best];
+  }
+
+  function show(clientX){
+    var d = nearest(clientX);
+    var w = weightOf(d), ma = maAt(d);
+    if(w === null && ma === null){ hide(); return; }
+    cross.setAttribute('x1', X(d));
+    cross.setAttribute('x2', X(d));
+    cross.setAttribute('opacity', 1);
+
+    // 标签是用户数据 → 一律 textContent，绝不拼 innerHTML
+    tip.innerHTML = '';
+    var dt = document.createElement('div');
+    dt.className = 'td';
+    var e = entryOf(d);
+    dt.textContent = fmtDate(d) + (e && e.frozen ? ' · 冻结日' : '');
+    tip.appendChild(dt);
+
+    function row(color, name, val){
+      if(val === null) return;
+      var r1 = document.createElement('div'); r1.className = 'tr';
+      var k = document.createElement('span'); k.className = 'tk'; k.style.background = color;
+      var n = document.createElement('span'); n.className = 'tn'; n.textContent = name;
+      var v = document.createElement('span'); v.className = 'tv';
+      v.textContent = val.toFixed(2);
+      r1.appendChild(k); r1.appendChild(n); r1.appendChild(v);
+      tip.appendChild(r1);
+    }
+    row('var(--series-1)', '体重', w);
+    row('var(--series-2)', '7日均线', ma);
+    if(e && e.note){
+      var nr = document.createElement('div');
+      nr.className = 'td'; nr.style.margin = '6px 0 0';
+      nr.textContent = e.note;
+      tip.appendChild(nr);
+    }
+
+    tip.style.opacity = 1;
+    var br = box.getBoundingClientRect();
+    var px = (X(d) / W) * br.width + 14;
+    if(px + tip.offsetWidth > br.width) px = (X(d)/W)*br.width - tip.offsetWidth - 14;
+    tip.style.left = Math.max(0, px) + 'px';
+    tip.style.top  = Math.max(0, (Y(Math.max(w===null?ma:w, ma===null?w:ma)) / H) * br.height - 20) + 'px';
+  }
+  function hide(){
+    cross.setAttribute('opacity', 0);
+    tip.style.opacity = 0;
+  }
+  hit.addEventListener('pointermove', function(ev){ show(ev.clientX); });
+  hit.addEventListener('pointerdown', function(ev){ show(ev.clientX); });
+  hit.addEventListener('pointerleave', hide);
+
+  // 键盘可达：左右方向键移动准线
+  svg.setAttribute('tabindex','0');
+  var kIdx = allDays.length - 1;
+  svg.addEventListener('keydown', function(ev){
+    if(ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+    ev.preventDefault();
+    kIdx = Math.max(0, Math.min(allDays.length-1, kIdx + (ev.key === 'ArrowRight' ? 1 : -1)));
+    var target = allDays[kIdx];
+    var r = svg.getBoundingClientRect();
+    var clientX = r.left + (X(target)/W)*r.width;
+    show(clientX);
+  });
+  svg.addEventListener('blur', hide);
+
+  renderChartTable(series);
+}
+
+function niceStep(raw){
+  var mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  var n = raw / mag;
+  var s = n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10;
+  return s * mag;
+}
+
+function renderChartTable(series){
+  var tb = document.getElementById('tbl-chart').querySelector('tbody');
+  tb.innerHTML = '';
+  if(!series.length){ tb.innerHTML = '<tr><td colspan="5" class="empty">暂无数据</td></tr>'; return; }
+  series.slice().reverse().forEach(function(p){
+    var tr = document.createElement('tr');
+    function td(txt, cls){
+      var c = document.createElement('td');
+      if(cls) c.className = cls;
+      c.textContent = txt;
+      tr.appendChild(c);
+      return c;
+    }
+    td(p.d);
+    td(p.w === null ? '—' : p.w.toFixed(2), 'num');
+    td(p.ma === null ? '—' : p.ma.toFixed(2), 'num');
+    var prev = weightOf(addDays(p.d, -1));
+    td(p.w === null || prev === null ? '—' : (p.w - prev > 0 ? '+' : '') + (p.w - prev).toFixed(2), 'num');
+    var e = entryOf(p.d);
+    td((e && e.frozen ? '[冻结] ' : '') + ((e && e.note) || ''));
+    tb.appendChild(tr);
+  });
+}
+
+/* ── 渲染：录入 ───────────────────────────────────────────────────────── */
+function renderEntry(){
+  var d = document.getElementById('in-date').value || today();
+  var e = entryOf(d);
+  document.getElementById('in-weight').value = (e && typeof e.weight === 'number') ? e.weight : '';
+  document.getElementById('in-note').value = (e && e.note) || '';
+  var hint = document.getElementById('entry-hint');
+  var future = d > today();
+  var old = daysBetween(d, today()) > 14;
+  if(future)      hint.textContent = '不能录未来的日期。';
+  else if(old)    hint.textContent = '只能补录最近 14 天内的记录。';
+  else if(e && e.frozen) hint.textContent = '这一天已标记为冻结日：'+(e.freezeReason || '未填原因')+'。再点一次「冻结日」可取消。';
+  else if(e)      hint.textContent = '这一天已有记录，保存会覆盖。';
+  else            hint.textContent = '';
+}
+
+/* ── 渲染：打卡 ───────────────────────────────────────────────────────── */
+function renderTasks(){
+  var d = document.getElementById('in-date').value || today();
+  var e = entryOf(d);
+  var checks = (e && e.checks) || {};
+  var box = document.getElementById('tasks');
+  box.innerHTML = '';
+  var done = 0;
+  state.config.behaviorTasks.forEach(function(t){
+    var lab = document.createElement('label');
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = !!checks[t.id];
+    if(cb.checked) done++;
+    cb.addEventListener('change', function(){
+      var ent = state.entries[d] || (state.entries[d] = {});
+      ent.checks = ent.checks || {};
+      ent.checks[t.id] = cb.checked;
+      if(!ent.checks[t.id]) delete ent.checks[t.id];
+      save();
+      document.getElementById('check-count').textContent = countChecks(d) + '/' + state.config.behaviorTasks.length;
+    });
+    var sp = document.createElement('span');
+    sp.textContent = t.name;                       // 任务名可能被改，走 textContent
+    lab.appendChild(cb); lab.appendChild(sp);
+    box.appendChild(lab);
+  });
+  document.getElementById('check-count').textContent = done + '/' + state.config.behaviorTasks.length;
+}
+function countChecks(d){
+  var e = entryOf(d);
+  if(!e || !e.checks) return 0;
+  return Object.keys(e.checks).filter(function(k){ return e.checks[k]; }).length;
+}
+
+/* ── 渲染：账本 ───────────────────────────────────────────────────────── */
+function renderLedger(){
+  var bal = poolBalance();
+  document.getElementById('pool-pill').textContent = '待捐 ¥' + bal.toFixed(0);
+  document.getElementById('pool-pill').className = 'pill' + (bal > 0 ? ' warn' : ' ok');
+
+  var body = document.getElementById('ledger-body');
+  body.innerHTML = '';
+
+  if(!state.ledger.length){
+    body.innerHTML = '<div class="empty">账本还是空的。跑一次结算，或手动加一笔。</div>';
+  } else {
+    var wrap = document.createElement('div'); wrap.className = 'tblwrap';
+    var tb = document.createElement('table');
+    tb.innerHTML = '<thead><tr><th>日期</th><th>类型</th><th>内容</th><th class="num">金额</th><th>状态</th><th></th></tr></thead>';
+    var tbody = document.createElement('tbody');
+    state.ledger.slice().sort(function(a,b){ return (b.date + b.ts) < (a.date + a.ts) ? -1 : 1; })
+      .forEach(function(r){
+        var tr = document.createElement('tr');
+        function td(txt, cls){
+          var c = document.createElement('td'); if(cls) c.className = cls;
+          c.textContent = txt; tr.appendChild(c); return c;
+        }
+        td(r.date);
+        td(r.kind === 'fine' ? '罚款' : r.kind === 'payout' ? '清零' : '剥夺娱乐');
+        td(r.label + (r.detail ? ' — ' + r.detail : ''));
+        td(r.kind === 'fine' ? '¥' + r.amount.toFixed(0) : r.kind === 'payout' ? '¥' + r.amount.toFixed(0) : '—', 'num');
+        td(r.status === 'settled' ? '已清零' : r.status === 'done' ? '已执行' : '待处理');
+
+        var act = document.createElement('td');
+        if(r.kind === 'deprivation' && r.status === 'pending'){
+          var b1 = document.createElement('button');
+          b1.className = 'tiny'; b1.textContent = '已执行';
+          b1.addEventListener('click', function(){ r.status = 'done'; save(); renderAll(); });
+          var b2 = document.createElement('button');
+          b2.className = 'tiny danger'; b2.style.marginLeft = '6px'; b2.textContent = '未执行→罚款';
+          b2.addEventListener('click', function(){
+            var rec = addFine(r.date, '剥夺娱乐未执行', '剥夺项「'+r.label+'」未执行，自动升级为一笔罚款', nextFineAmount());
+            if(!rec){ alert('这一天的罚款已达单日上限，本次不再叠加。'); return; }
+            r.status = 'done';
+            save(); renderAll();
+          });
+          act.appendChild(b1); act.appendChild(b2);
+        } else if(r.status === 'pending'){
+          var b3 = document.createElement('button');
+          b3.className = 'tiny'; b3.textContent = '撤销';
+          b3.addEventListener('click', function(){
+            if(!confirm('删除这条记录？')) return;
+            state.ledger = state.ledger.filter(function(x){ return x.id !== r.id; });
+            save(); renderAll();
+          });
+          act.appendChild(b3);
+        }
+        tr.appendChild(act);
+        tbody.appendChild(tr);
+      });
+    tb.appendChild(tbody);
+    wrap.appendChild(tb);
+    body.appendChild(wrap);
+  }
+
+  var pending = state.ledger.filter(function(r){
+    return r.kind === 'deprivation' && r.status === 'pending';
+  }).length;
+  document.getElementById('ledger-meta').textContent = pending
+    ? pending + ' 个剥夺项待执行（未执行请点升级为罚款）' : '';
+}
+
+/* ── 渲染：围度 ───────────────────────────────────────────────────────── */
+function renderMeasure(){
+  var tb = document.getElementById('tbl-measure').querySelector('tbody');
+  tb.innerHTML = '';
+  var list = state.measurements.slice().sort(function(a,b){ return a.date < b.date ? -1 : 1; });
+  if(!list.length){
+    tb.innerHTML = '<tr><td colspan="7" class="empty">还没有围度记录。建议每周同一天、早上空腹量一次。</td></tr>';
+    return;
+  }
+  var first = list[0];
+  list.slice().reverse().forEach(function(m){
+    var tr = document.createElement('tr');
+    function td(txt, cls){
+      var c = document.createElement('td'); if(cls) c.className = cls;
+      c.textContent = txt; tr.appendChild(c); return c;
+    }
+    td(m.date);
+    td(m.waist == null ? '—' : m.waist.toFixed(1), 'num');
+    td(m.hip   == null ? '—' : m.hip.toFixed(1),   'num');
+    td(m.thigh == null ? '—' : m.thigh.toFixed(1), 'num');
+    td(m.fat   == null ? '—' : m.fat.toFixed(1),   'num');
+    if(m.waist != null && first.waist != null){
+      var d = m.waist - first.waist;
+      td((d > 0 ? '+' : '') + d.toFixed(1), 'num');
+    } else td('—', 'num');
+    var act = document.createElement('td');
+    var b = document.createElement('button');
+    b.className = 'tiny'; b.textContent = '删';
+    b.addEventListener('click', function(){
+      if(!confirm('删除 '+m.date+' 的围度记录？')) return;
+      state.measurements = state.measurements.filter(function(x){ return x !== m; });
+      save(); renderAll();
+    });
+    act.appendChild(b); tr.appendChild(act);
+    tb.appendChild(tr);
+  });
+}
+
+/* ── 渲染：结算区 ─────────────────────────────────────────────────────── */
+var lastSettlement = null;
+
+function renderSettle(){
+  var cfg = state.config;
+  document.getElementById('settle-meta').textContent =
+    '阈值 +' + cfg.weeklyGainThreshold + ' kg · 连续未记录 ≥' + cfg.missRecordStreak + ' 天 · ' +
+    '当前阶梯 ×' + ((cfg.escalation||0) + 1) + '（单笔 ¥' + nextFineAmount() + '）';
+
+  var out = document.getElementById('settle-out');
+  out.innerHTML = '';
+  if(!lastSettlement) return;
+
+  if(lastSettlement.skipped){
+    var d1 = document.createElement('div');
+    d1.className = 'banner'; d1.textContent = lastSettlement.reason;
+    out.appendChild(d1);
+    return;
+  }
+  if(!lastSettlement.items.length){
+    var d2 = document.createElement('div');
+    d2.className = 'banner';
+    d2.textContent = '本周期没触发任何惩罚。7 日均线没有上行超过阈值，记录也连续。';
+    out.appendChild(d2);
+    return;
+  }
+
+  var box = document.createElement('div');
+  box.className = 'banner';
+  var head = document.createElement('div');
+  head.style.cssText = 'font-weight:650;color:var(--text-primary);margin-bottom:6px';
+  head.textContent = '建议惩罚（确认前不入账）';
+  box.appendChild(head);
+
+  lastSettlement.items.forEach(function(it){
+    var line = document.createElement('div');
+    line.style.marginTop = '4px';
+    line.textContent = (it.kind === 'fine' ? '· 罚款 ¥' + it.amount + '：' : it.kind === 'deprivation' ? '· 剥夺娱乐：' : '· 提示：')
+                        + it.label + ' —— ' + it.detail;
+    box.appendChild(line);
+  });
+  out.appendChild(box);
+
+  var actionable = lastSettlement.items.filter(function(it){ return it.kind !== 'info'; });
+  if(!actionable.length) return;
+
+  var btnRow = document.createElement('div');
+  btnRow.className = 'row';
+  btnRow.style.marginTop = '10px';
+
+  var ok = document.createElement('button');
+  ok.className = 'primary';
+  ok.textContent = '确认入账';
+  ok.addEventListener('click', function(){
+    var n = 0, asOf = today();
+    actionable.forEach(function(it){
+      if(it.kind === 'fine'){ if(addFine(asOf, it.label, it.detail, it.amount)) n++; }
+      else if(it.kind === 'deprivation'){ if(addDeprivation(asOf, it.detail)) n++; }
+    });
+    state.config.escalation = (state.config.escalation || 0) + 1;   // 阶梯升级
+    lastSettlement = null;
+    save(); renderAll();
+    alert('已入账 ' + n + ' 条。下一周期若再触发，单笔金额升到 ¥' + nextFineAmount() + '。');
+  });
+
+  var no = document.createElement('button');
+  no.textContent = '本周期不罚（冻结/特殊情况）';
+  no.addEventListener('click', function(){
+    if(!confirm('跳过本次惩罚？阶梯计数会归零，重新从基准金额开始。')) return;
+    state.config.escalation = 0;
+    lastSettlement = null;
+    save(); renderAll();
+  });
+
+  btnRow.appendChild(ok); btnRow.appendChild(no);
+  out.appendChild(btnRow);
+}
+
+/* ── 渲染：设置 & 备份提醒 ────────────────────────────────────────────── */
+function renderConfig(){
+  var c = state.config;
+  document.getElementById('cfg-fine').value = c.fineAmount;
+  document.getElementById('cfg-cap').value  = c.dailyFineCap;
+  document.getElementById('cfg-thr').value  = c.weeklyGainThreshold;
+  document.getElementById('cfg-miss').value = c.missRecordStreak;
+  document.getElementById('mod-finePool').classList.toggle('on', !!c.modules.finePool);
+  document.getElementById('mod-deprivation').classList.toggle('on', !!c.modules.deprivation);
+
+  var t = c.theme || 'auto';
+  document.getElementById('btn-theme').textContent =
+    '主题：' + (t === 'auto' ? '跟随系统' : t === 'dark' ? '深色' : '浅色');
+
+  var warn = document.getElementById('backup-warn');
+  warn.innerHTML = '';
+  var never = !c.lastExport;
+  var stale = c.lastExport && daysBetween(c.lastExport, today()) > 14;
+  if(never || stale){
+    var d = document.createElement('div');
+    d.className = 'banner warn';
+    d.textContent = never
+      ? '还没有导出过备份。数据只在这台电脑的浏览器里，建议现在就点右上角「导出备份」存一份到 iCloud 或网盘。'
+      : '上次导出是 ' + c.lastExport + '，已经超过 14 天。建议再导出一份。';
+    warn.appendChild(d);
+  }
+}
+
+/* ── 总渲染 ───────────────────────────────────────────────────────────── */
+function renderAll(){
+  renderTiles();
+  renderChart();
+  renderEntry();
+  renderTasks();
+  renderLedger();
+  renderMeasure();
+  renderSettle();
+  renderConfig();
+}
+
+/* ── 事件 ─────────────────────────────────────────────────────────────── */
+function bind(){
+  document.getElementById('in-date').addEventListener('change', function(){
+    renderEntry(); renderTasks();
+  });
+
+  document.getElementById('btn-save').addEventListener('click', function(){
+    var d = document.getElementById('in-date').value || today();
+    if(d > today()){ alert('不能录未来的日期。'); return; }
+    if(daysBetween(d, today()) > 14){ alert('只能补录最近 14 天内的记录。'); return; }
+    var raw = document.getElementById('in-weight').value;
+    if(raw === ''){ alert('体重不能为空。要只记备注或打卡，直接改备注框再点保存即可。'); return; }
+    var w = parseFloat(raw);
+    if(!isFinite(w) || w < 20 || w > 400){ alert('体重数值看起来不对（允许 20–400）。'); return; }
+
+    var ent = state.entries[d] || (state.entries[d] = {});
+    ent.weight = Math.round(w*100)/100;
+    ent.note = document.getElementById('in-note').value.trim();
+    save();
+    renderAll();
+  });
+
+  document.getElementById('btn-freeze').addEventListener('click', function(){
+    var d = document.getElementById('in-date').value || today();
+    if(d > today()){ alert('不能操作未来的日期。'); return; }
+    var ent = state.entries[d] || (state.entries[d] = {});
+    if(ent.frozen){
+      ent.frozen = false; ent.freezeReason = '';
+    } else {
+      var r = prompt('冻结原因（生病 / 经期 / 出差 / 其他）：', ent.freezeReason || '');
+      if(r === null) return;
+      ent.frozen = true; ent.freezeReason = r.trim();
+    }
+    save(); renderAll();
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('[data-range]'), function(b){
+    b.addEventListener('click', function(){
+      var r = b.getAttribute('data-range');
+      chartRange = (r === 'all') ? 'all' : parseInt(r, 10);
+      renderChart();
+    });
+  });
+
+  document.getElementById('btn-settle').addEventListener('click', function(){
+    lastSettlement = computeSettlement(today());
+    renderSettle();
+  });
+
+  document.getElementById('btn-payout').addEventListener('click', function(){
+    var bal = poolBalance();
+    if(bal <= 0){ alert('池子是空的，没有需要清零的金额。'); return; }
+    var to = prompt('这笔 ¥' + bal.toFixed(0) + ' 转给谁 / 捐到哪？（会记进账本，方便你回看）', '');
+    if(to === null) return;
+    state.ledger.forEach(function(r){
+      if(r.kind === 'fine' && r.status !== 'settled') r.status = 'settled';
+    });
+    state.ledger.push({ id:uid(), date:today(), kind:'payout', amount:bal,
+      label:'清零 → ' + (to.trim() || '未填写去向'), detail:'', status:'done', ts:Date.now() });
+    state.config.escalation = 0;
+    save(); renderAll();
+  });
+
+  document.getElementById('btn-manual-fine').addEventListener('click', function(){
+    var amt = prompt('罚款金额（元，单笔硬上限 ¥' + MAX_FINE + '）：', String(nextFineAmount()));
+    if(amt === null) return;
+    var a = parseFloat(amt);
+    if(!isFinite(a) || a <= 0){ alert('金额不对。'); return; }
+    var why = prompt('原因：', '');
+    if(why === null) return;
+    var rec = addFine(today(), '手动', why.trim(), a);
+    if(!rec){ alert('没加成 —— 要么今天已经有同名记录，要么已经达到单日上限 ¥' + state.config.dailyFineCap + '。'); return; }
+    save(); renderAll();
+  });
+
+  document.getElementById('btn-measure').addEventListener('click', function(){
+    var d = document.getElementById('m-date').value || today();
+    function num(id){
+      var v = document.getElementById(id).value;
+      if(v === '') return null;
+      var n = parseFloat(v);
+      return isFinite(n) ? n : null;
+    }
+    var m = { date:d, waist:num('m-waist'), hip:num('m-hip'), thigh:num('m-thigh'), fat:num('m-fat') };
+    if(m.waist === null && m.hip === null && m.thigh === null && m.fat === null){
+      alert('至少填一项。'); return;
+    }
+    state.measurements = state.measurements.filter(function(x){ return x.date !== d; });
+    state.measurements.push(m);
+    ['m-waist','m-hip','m-thigh','m-fat'].forEach(function(id){ document.getElementById(id).value = ''; });
+    save(); renderAll();
+  });
+
+  // 设置项
+  function bindNum(id, key, lo, hi){
+    document.getElementById(id).addEventListener('change', function(){
+      var v = parseFloat(this.value);
+      if(!isFinite(v)) { renderConfig(); return; }
+      v = Math.max(lo, Math.min(hi, v));
+      state.config[key] = v;
+      this.value = v;
+      save(); renderAll();
+    });
+  }
+  bindNum('cfg-fine', 'fineAmount', 1, MAX_FINE);
+  bindNum('cfg-cap',  'dailyFineCap', 1, MAX_FINE);
+  bindNum('cfg-thr',  'weeklyGainThreshold', 0.1, 3);
+  bindNum('cfg-miss', 'missRecordStreak', 1, 14);
+
+  document.getElementById('mod-finePool').addEventListener('click', function(){
+    state.config.modules.finePool = !state.config.modules.finePool; save(); renderAll();
+  });
+  document.getElementById('mod-deprivation').addEventListener('click', function(){
+    state.config.modules.deprivation = !state.config.modules.deprivation; save(); renderAll();
+  });
+
+  // 主题：auto → dark → light → auto
+  document.getElementById('btn-theme').addEventListener('click', function(){
+    var order = ['auto','dark','light'];
+    var i = order.indexOf(state.config.theme || 'auto');
+    var next = order[(i+1) % order.length];
+    state.config.theme = next;
+    applyTheme();
+    save(); renderConfig();
+  });
+
+  // 导出
+  document.getElementById('btn-export').addEventListener('click', function(){
+    state.config.lastExport = today();
+    save();
+    var data = JSON.stringify(state, null, 2);
+    var blob = new Blob([data], { type:'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'weight-backup-' + today() + '.json';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    renderConfig();
+  });
+
+  // 导入
+  document.getElementById('btn-import').addEventListener('click', function(){
+    document.getElementById('file-import').click();
+  });
+  document.getElementById('file-import').addEventListener('change', function(ev){
+    var f = ev.target.files && ev.target.files[0];
+    if(!f) return;
+    var rd = new FileReader();
+    rd.onload = function(){
+      var obj;
+      try{ obj = JSON.parse(rd.result); }
+      catch(e){ alert('这个文件不是合法的 JSON。'); return; }
+      if(!obj || !obj.entries || typeof obj.entries !== 'object'){
+        alert('文件结构不对 —— 缺 entries 字段。请选之前用本页「导出备份」生成的文件。'); return;
+      }
+      var n = Object.keys(obj.entries).length;
+      if(!confirm('导入会覆盖当前全部数据（现有 ' + Object.keys(state.entries).length +
+                  ' 条记录 → 文件里的 ' + n + ' 条）。\n\n建议先点「取消」，导出当前数据备份后再导入。\n\n确定要覆盖吗？')) return;
+      state = {
+        version: 1,
+        config: Object.assign(blank().config, obj.config || {}),
+        entries: obj.entries,
+        measurements: Array.isArray(obj.measurements) ? obj.measurements : [],
+        ledger: Array.isArray(obj.ledger) ? obj.ledger : []
+      };
+      state.config.modules = Object.assign(blank().config.modules, (obj.config||{}).modules || {});
+      if(!Array.isArray(state.config.behaviorTasks) || !state.config.behaviorTasks.length)
+        state.config.behaviorTasks = DEFAULT_TASKS.slice();
+      save();
+      applyTheme();
+      renderAll();
+      alert('导入完成，共 ' + n + ' 条记录。');
+    };
+    rd.readAsText(f);
+    ev.target.value = '';
+  });
+
+  // 清空
+  document.getElementById('btn-reset').addEventListener('click', function(){
+    if(!confirm('第一步：先导出一份备份好吗？\n\n点「确定」会立刻下载一份备份文件，然后再问你确认。')) return;
+    document.getElementById('btn-export').click();
+    setTimeout(function(){
+      if(!confirm('备份已下载（在浏览器下载目录里）。\n\n确认清空全部数据？此操作无法撤销。')) return;
+      if(!confirm('最后确认一次：清空 ' + Object.keys(state.entries).length + ' 条记录、' +
+                  state.ledger.length + ' 条账本记录。真的清？')) return;
+      state = blank();
+      save(); applyTheme(); renderAll();
+    }, 900);
+  });
+}
+
+/* ── 主题 ─────────────────────────────────────────────────────────────── */
+function applyTheme(){
+  var t = state.config.theme || 'auto';
+  if(t === 'auto') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', t);
+}
+
+/* ── 启动 ─────────────────────────────────────────────────────────────── */
+load();
+applyTheme();
+document.getElementById('in-date').value = today();
+document.getElementById('m-date').value = today();
+bind();
+renderAll();
+
+if(!storageOK){
+  var w = document.createElement('div');
+  w.className = 'banner warn';
+  w.textContent = '浏览器本地存储不可用（可能是隐私模式）。这一页现在只能用，不能存 —— 关掉就没了。';
+  document.getElementById('backup-warn').appendChild(w);
+}
+
+})();
+</script>
+</body>
+</html>
