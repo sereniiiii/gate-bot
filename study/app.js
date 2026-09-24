@@ -35,11 +35,14 @@
   const S = {
     me: null,
     profileMap: {},       // id -> display_name
+    avatarMap: {},        // id -> 头像 data URL（空串表示没上传过）
     profileList: [],
     goals: [], tasks: [], subtasks: [], daily: [], resources: [],
-    tab: 'goals',
+    tab: 'home',          // 登录后落在主页
     mood: null,
     resScope: 'all',      // all | me | other
+    feedKind: 'all',      // all | done | log | res
+    noDoneAt: false,      // 库里还没加 done_at 列时置位（setup-3-feed.sql 跑之前）
   };
 
   /* ── 小工具 ────────────────────────────────────────────────── */
@@ -120,6 +123,36 @@
   }
   const isMine = (row) => !!S.me && row.owner === S.me.id;
 
+  /* 头像：有图用图，没图就用自己的名字首字兜底（不是默认灰头像，两个人颜色可区分） */
+  function avatarEl(id, cls) {
+    const url = S.avatarMap[id];
+    const mine = S.me && id === S.me.id;
+    const box = h('span', { class: 'av ' + (mine ? 'me' : 'other') + (cls ? ' ' + cls : '') });
+    if (url) box.appendChild(h('img', { src: url, alt: nameOf(id) }));
+    else box.textContent = (nameOf(id) || '?').trim().charAt(0).toUpperCase();
+    return box;
+  }
+
+  /* 相对时间：库里存的是 ISO 串，这里换算成人话 */
+  function relTime(iso) {
+    if (!iso) return '';
+    const t = new Date(iso).getTime();
+    if (isNaN(t)) return '';
+    const diff = Date.now() - t;
+    const min = Math.floor(diff / 60000);
+    if (min < 1)  return '刚刚';
+    if (min < 60) return min + ' 分钟前';
+    const hr = Math.floor(min / 60);
+    if (hr < 24)  return hr + ' 小时前';
+    const day = Math.floor(hr / 24);
+    if (day === 1) return '昨天';
+    if (day < 7)   return day + ' 天前';
+    const d = new Date(t);
+    const y = new Date();
+    const md = (d.getMonth() + 1) + ' 月 ' + d.getDate() + ' 日';
+    return d.getFullYear() === y.getFullYear() ? md : d.getFullYear() + ' 年 ' + md;
+  }
+
   /* ── 后端 ──────────────────────────────────────────────────── */
   let sb = null;
 
@@ -137,7 +170,11 @@
 
     S.profileList = res[0].data || [];
     S.profileMap  = {};
-    S.profileList.forEach((p) => { S.profileMap[p.id] = p.display_name; });
+    S.avatarMap   = {};
+    S.profileList.forEach((p) => {
+      S.profileMap[p.id] = p.display_name;
+      S.avatarMap[p.id]  = p.avatar || '';
+    });
     S.goals     = res[1].data || [];
     S.tasks     = res[2].data || [];
     S.subtasks  = res[3].data || [];
@@ -168,6 +205,20 @@
     if (okMsg) toast(okMsg);
     await refresh();
     return true;
+  }
+
+  /* 勾选完成时顺便写 done_at（主页动态流靠它排序）。
+     旧库还没加这一列时自动退化成只写 done —— 按钮不会因此点不动。 */
+  function setDone(table, id, done, patch) {
+    const full = Object.assign({ done: done, done_at: done ? new Date().toISOString() : null }, patch || {});
+    return sb.from(table).update(full).eq('id', id).then((r) => {
+      if (r.error && /done_at/i.test(r.error.message)) {
+        S.noDoneAt = true;
+        const slim = Object.assign({ done: done }, patch || {});
+        return sb.from(table).update(slim).eq('id', id);
+      }
+      return r;
+    });
   }
 
   /* ── 实时同步（防打断）─────────────────────────────────────── */
@@ -214,7 +265,11 @@
       const mine = id === S.me.id;
       container.appendChild(
         h('div', { class: 'who ' + (mine ? 'me' : 'other') },
-          h('h3', null, nameOf(id), h('span', { class: 'badge', text: mine ? '我' : '对方' })),
+          h('h3', null,
+            avatarEl(id, 'sm'),
+            h('span', { class: 'nm', text: nameOf(id) }),
+            h('span', { class: 'badge', text: mine ? '我' : '对方' })
+          ),
           renderOne(id, m[id], mine)
         )
       );
@@ -255,7 +310,7 @@
                 class: 'tiny',
                 text: g.done ? '取消完成' : '标记完成',
                 onclick: () => commit(
-                  sb.from('goals').update({ done: !g.done, progress: !g.done ? g.target : g.progress }).eq('id', g.id)
+                  setDone('goals', g.id, !g.done, { progress: !g.done ? g.target : g.progress })
                 ),
               }),
               h('button', {
@@ -331,7 +386,7 @@
         onchange: async (e) => {
           const v = e.target.checked;
           sub.done = v;
-          await quiet(sb.from('subtasks').update({ done: v }).eq('id', sub.id));
+          await quiet(setDone('subtasks', sub.id, v));
           renderCurrent();
         },
       })
@@ -714,19 +769,208 @@
     await commit(sb.from(table).delete().eq('id', id), '已删除');
   }
 
+  /* ── 页签零：主页 ──────────────────────────────────────────── */
+  /* 动态流是「算」出来的，不额外存一张表：目标/小任务看 done，
+     日记和学习资源看建成时间。所以不加新表也能跑。 */
+  function buildFeed() {
+    const ev = [];
+
+    for (const g of S.goals) {
+      if (!g.done) continue;
+      ev.push({
+        owner: g.owner, at: g.done_at || null, kind: 'done',
+        text: '完成了 30 天目标 ', strong: g.title,
+        sub: '累计 ' + (g.progress || 0) + ' / ' + g.target,
+      });
+    }
+    for (const s of S.subtasks) {
+      if (!s.done) continue;
+      const task = S.tasks.find((x) => x.id === s.task_id);
+      ev.push({
+        owner: s.owner, at: s.done_at || null, kind: 'done',
+        text: '完成小任务 ', strong: s.title || '（还没填名字）',
+        sub: task ? task.title : '',
+      });
+    }
+    for (const d of S.daily) {
+      ev.push({
+        owner: d.owner, at: d.created_at, kind: 'log', mood: d.mood,
+        text: '记了 ' + d.log_date + ' 的心情与困难', strong: '',
+        sub: d.difficulty || '',
+      });
+    }
+    for (const r of S.resources) {
+      ev.push({
+        owner: r.owner, at: r.created_at, kind: 'res',
+        text: '添加了' + (KIND_LABEL[r.kind] || '资源') + ' ', strong: r.name,
+        sub: [r.platform, r.subject].filter(Boolean).join(' · '),
+      });
+    }
+
+    // 没有 done_at 的（加固脚本跑之前的旧数据）排在最后，不假装有时间
+    const t = (e) => (e.at ? new Date(e.at).getTime() : -1);
+    ev.sort((a, b) => t(b) - t(a));
+    return ev;
+  }
+
+  function renderFeed() {
+    const box = $('feed');
+    clear(box);
+
+    const chips = $('feed-filter');
+    clear(chips);
+    [['all', '全部'], ['done', '完成了什么'], ['log', '每日记录'], ['res', '学习资源']]
+      .forEach(([k, label]) => chips.appendChild(h('button', {
+        class: 'tiny' + (S.feedKind === k ? ' primary' : ''),
+        text: label,
+        onclick: () => { S.feedKind = k; renderFeed(); },
+      })));
+
+    let ev = buildFeed();
+    if (S.feedKind !== 'all') ev = ev.filter((e) => e.kind === S.feedKind);
+    if (!ev.length) { box.appendChild(emptyNote('这个范围内还没有动态。')); return; }
+
+    const shown = ev.slice(0, 60);
+    for (const e of shown) {
+      box.appendChild(h('div', { class: 'feed-item' },
+        avatarEl(e.owner, 'sm'),
+        h('div', { class: 'bd' },
+          h('div', { class: 'tx' },
+            nameOf(e.owner) + ' ' + e.text,
+            e.strong ? h('b', { text: e.strong }) : null
+          ),
+          h('div', { class: 'mt' },
+            e.at ? relTime(e.at) : '较早完成',
+            e.mood ? h('span', { class: 'mo', text: MOODS[e.mood - 1] || '' }) : null,
+            e.sub ? h('span', { text: e.sub }) : null
+          )
+        )
+      ));
+    }
+    if (ev.length > shown.length) {
+      box.appendChild(h('div', { class: 'hint',
+        text: '只显示最近 ' + shown.length + ' 条，共 ' + ev.length + ' 条。' }));
+    }
+  }
+
+  function pcRow(k, v, q) {
+    return h('div', { class: 'pc-row' },
+      h('span', { class: 'k', text: k }),
+      h('span', { class: 'v', text: v }),
+      q ? h('span', { class: 'q', text: q }) : null
+    );
+  }
+
+  function renderPeople() {
+    const box = $('home-people');
+    clear(box);
+
+    const ids = Object.keys(S.profileMap);
+    // profiles 万一读不到（比如加固脚本把读权限收紧了但自己还没进名单），也要有自己的卡片
+    if (S.me && ids.indexOf(S.me.id) < 0) ids.push(S.me.id);
+    ids.sort((a, b) => {
+      if (a === S.me.id) return -1;
+      if (b === S.me.id) return 1;
+      return nameOf(a).localeCompare(nameOf(b), 'zh');
+    });
+
+    for (const id of ids) {
+      const mine    = !!S.me && id === S.me.id;
+      const g       = S.goals.filter((x) => x.owner === id);
+      const t       = S.tasks.filter((x) => x.owner === id);
+      const subs    = S.subtasks.filter((x) => x.owner === id);
+      const subDone = subs.filter((x) => x.done).length;
+      const r       = S.resources.filter((x) => x.owner === id);
+      const log     = S.daily.find((x) => x.owner === id && x.log_date === today());
+      const gProg   = g.reduce((n, x) => n + (x.progress || 0), 0);
+      const gTarget = g.reduce((n, x) => n + (x.target || 0), 0);
+
+      box.appendChild(h('div', { class: 'pcard ' + (mine ? 'me' : 'other') },
+        h('div', { class: 'pc-head' },
+          avatarEl(id, 'lg'),
+          h('div', null,
+            h('div', { class: 'nm', text: nameOf(id) }),
+            h('div', { class: 'rl', text: mine ? '我' : '对方' })
+          ),
+          mine ? h('button', {
+            class: 'tiny pc-edit',
+            text: S.avatarMap[id] ? '换头像' : '上传头像',
+            onclick: () => $('av-file').click(),
+          }) : null
+        ),
+        h('div', { class: 'pc-rows' },
+          pcRow('30 天目标',
+            g.length ? g.filter((x) => x.done).length + ' / ' + g.length + ' 个完成' : '还没建',
+            g.length ? '累计 ' + gProg + ' / ' + gTarget : ''),
+          pcRow('大任务',
+            t.length ? t.length + ' 个' : '还没建',
+            subs.length ? '小任务 ' + subDone + ' / ' + subs.length : ''),
+          pcRow('今天', log ? '已记录' : '还没记',
+            log && log.mood ? MOODS[log.mood - 1] : ''),
+          pcRow('学习资源',
+            r.length ? r.length + ' 个' : '还没加',
+            r.length ? '进行中 ' + r.filter((x) => x.status === 'doing').length +
+                       ' · 已完成 ' + r.filter((x) => x.status === 'done').length : '')
+        )
+      ));
+    }
+  }
+
+  function renderEntries() {
+    const box = $('home-entries');
+    clear(box);
+    [['goals', '30 天目标', '看谁在跑什么目标'],
+     ['tasks', '大任务拆解', '推进小任务进度'],
+     ['daily', '每日困难与心情', '记今天'],
+     ['res', '学习资源', '工具书 / 网课 / 老师'],
+     ['data', '导出 / 导入', '存一份完整快照']]
+      .forEach(([tab, name, desc]) => box.appendChild(h('button', {
+        class: 'entry', onclick: () => goTab(tab),
+      }, h('span', { class: 'eb' },
+        h('span', { class: 'en', text: name }),
+        h('span', { class: 'ed', text: desc })
+      ))));
+  }
+
+  function renderHome() {
+    const ids = Object.keys(S.profileMap);
+    if (S.me && ids.indexOf(S.me.id) < 0) ids.push(S.me.id);
+    const logged = ids.filter((id) => S.daily.some((x) => x.owner === id && x.log_date === today()));
+    $('home-sub').textContent = '今天是 ' + today() + ' · ' +
+      (logged.length ? logged.map(nameOf).join('、') + ' 已经记了今天'
+                     : '两个人都还没记今天');
+
+    renderPeople();
+    renderFeed();
+    renderEntries();
+  }
+
   /* ── 渲染分发 ──────────────────────────────────────────────── */
-  const RENDER = { goals: renderGoals, tasks: renderTasks, daily: renderDaily, res: renderRes, data: renderData };
-  function renderCurrent() { (RENDER[S.tab] || renderGoals)(); }
+  const RENDER = {
+    home: renderHome, goals: renderGoals, tasks: renderTasks,
+    daily: renderDaily, res: renderRes, data: renderData,
+  };
+  function renderCurrent() { (RENDER[S.tab] || renderHome)(); }
+
+  /* 页签切换抽出来，主页的入口卡片也要用 */
+  function goTab(name) {
+    S.tab = name;
+    document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
+    document.querySelectorAll('.pane').forEach((p) => { p.hidden = p.id !== 'pane-' + name; });
+    renderCurrent();
+  }
 
   /* ── 事件绑定 ──────────────────────────────────────────────── */
   function bindUI() {
     document.querySelectorAll('.tab').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        S.tab = btn.dataset.tab;
-        document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b === btn));
-        document.querySelectorAll('.pane').forEach((p) => { p.hidden = p.id !== 'pane-' + S.tab; });
-        renderCurrent();
-      });
+      btn.addEventListener('click', () => goTab(btn.dataset.tab));
+    });
+
+    $('me-av').addEventListener('click', () => $('av-file').click());
+    $('av-file').addEventListener('change', async (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (f) await onAvatarFile(f);
+      e.target.value = '';
     });
 
     $('g-add').addEventListener('click', async () => {
@@ -818,15 +1062,74 @@
     });
   }
 
+  /* ── 头像 ──────────────────────────────────────────────────── */
+  /* 裁成正方形 → 缩到 160px → JPEG。出来的 data URL 约 8~15 KB，
+     直接存在 profiles.avatar 这个 text 列里，不占 Storage 配额、
+     也不需要多配一套 bucket 权限。 */
+  function shrinkImage(file, size) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const s = Math.min(img.width, img.height);
+          const c = document.createElement('canvas');
+          c.width = c.height = size;
+          c.getContext('2d').drawImage(
+            img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+          URL.revokeObjectURL(url);
+          resolve(c.toDataURL('image/jpeg', 0.85));
+        } catch (err) { URL.revokeObjectURL(url); reject(err); }
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('不是有效图片')); };
+      img.src = url;
+    });
+  }
+
+  async function onAvatarFile(file) {
+    if (!/^image\//.test(file.type)) { toast('请选图片文件', true); return; }
+    let dataUrl;
+    try { dataUrl = await shrinkImage(file, 160); }
+    catch (e) { toast('这张图读不出来：' + e.message, true); return; }
+    if (dataUrl.length > 120000) { toast('图片太大，换一张', true); return; }
+
+    const { error } = await sb.from('profiles').update({ avatar: dataUrl }).eq('id', S.me.id);
+    if (error) {
+      if (/avatar/i.test(error.message)) {
+        toast('库里还没有 avatar 列。先跑 study/setup-3-feed.sql，再回来点头像。', true);
+      } else toast(error.message, true);
+      return;
+    }
+    S.avatarMap[S.me.id] = dataUrl;
+    paintMeAvatar();
+    renderCurrent();
+    toast('头像已更新');
+  }
+
+  function paintMeAvatar() {
+    const el = $('me-av');
+    if (!el || !S.me) return;
+    clear(el);
+    el.className = 'av me clickable';
+    const url = S.avatarMap[S.me.id];
+    el.title = url ? '点头换头像' : '点头上传头像';
+    if (url) el.appendChild(h('img', { src: url, alt: nameOf(S.me.id) }));
+    else el.textContent = (nameOf(S.me.id) || '?').trim().charAt(0).toUpperCase();
+  }
+
   /* ── 登录 / 启动 ───────────────────────────────────────────── */
   function showApp(user) {
     S.me = user;
+    S.tab = 'home';
     $('view-login').hidden = true;
     $('view-app').hidden = false;
     $('whoami').textContent = (user.email || '') + ' · 已登录';
     if (!$('g-start').value) $('g-start').value = today();
     if (!$('d-date').value)  $('d-date').value  = today();
-    loadAll().then(renderCurrent).catch((e) => toast('读取失败：' + e.message, true));
+    paintMeAvatar();
+    loadAll()
+      .then(() => { paintMeAvatar(); goTab('home'); })   // 登录后落在主页
+      .catch((e) => toast('读取失败：' + e.message, true));
     subscribeRealtime();
   }
 

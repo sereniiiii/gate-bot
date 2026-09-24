@@ -8,29 +8,38 @@
 </head>
 <body>
 
-<!-- ══════════ 登录页 ══════════ -->
+<!-- ══════════ 登录页：独立全屏，和数据页完全不重叠 ══════════ -->
 <div id="view-login" class="login-wrap" hidden>
-  <form class="card login-card" id="login-form">
+  <div class="login-card">
+    <div class="brand" aria-hidden="true">
+      <span class="bdot a"></span><span class="bdot b"></span>
+    </div>
     <h1>学习协作</h1>
-    <p class="sub">用你的账号登录。密码由服务端校验，不保存在这个网页里。</p>
-    <div class="field">
-      <label for="lg-email">邮箱</label>
-      <input type="email" id="lg-email" autocomplete="username" required placeholder="you@example.com">
-    </div>
-    <div class="field">
-      <label for="lg-pass">密码</label>
-      <input type="password" id="lg-pass" autocomplete="current-password" required>
-    </div>
-    <button class="primary block" id="lg-btn" type="submit">登录</button>
-    <p class="err" id="lg-err" hidden></p>
-    <p class="hint">没有账号？这个页面不接受自助注册 —— 账号由管理员在后台创建。</p>
-  </form>
+    <p class="sub">两个人，各自一台设备，看到彼此的进度。</p>
+
+    <form id="login-form">
+      <div class="field">
+        <label for="lg-email">邮箱</label>
+        <input type="email" id="lg-email" autocomplete="username" required placeholder="you@example.com">
+      </div>
+      <div class="field">
+        <label for="lg-pass">密码</label>
+        <input type="password" id="lg-pass" autocomplete="current-password" required>
+      </div>
+      <button class="primary block" id="lg-btn" type="submit">登录</button>
+      <p class="err" id="lg-err" hidden></p>
+    </form>
+
+    <p class="hint login-foot">密码由 Supabase 服务端校验，不保存在这个网页里。<br>
+      没有账号？账号由管理员在 Supabase 后台创建。</p>
+  </div>
 </div>
 
-<!-- ══════════ 主界面 ══════════ -->
+<!-- ══════════ 数据页 ══════════ -->
 <div id="view-app" class="wrap" hidden>
 
   <header class="top">
+    <button class="av me clickable" id="me-av" title="点头换头像"></button>
     <div class="grow">
       <h1>学习协作</h1>
       <p class="sub" id="whoami">…</p>
@@ -41,17 +50,39 @@
       <button id="btn-logout">退出</button>
     </div>
   </header>
+  <input type="file" id="av-file" accept="image/*" hidden>
 
   <nav class="tabs" role="tablist">
-    <button class="tab on" data-tab="goals">30 天目标</button>
+    <button class="tab on" data-tab="home">主页</button>
+    <button class="tab" data-tab="goals">30 天目标</button>
     <button class="tab" data-tab="tasks">大任务拆解</button>
     <button class="tab" data-tab="daily">每日困难与心情</button>
     <button class="tab" data-tab="res">学习资源</button>
     <button class="tab" data-tab="data">导出 / 导入</button>
   </nav>
 
+  <!-- ── 主页：双方状态 + 最近动态 ── -->
+  <section class="pane" id="pane-home">
+    <div class="card">
+      <h2>我们</h2>
+      <p class="sub" id="home-sub">…</p>
+      <div class="cols" id="home-people" style="margin-top:14px"></div>
+    </div>
+
+    <div class="card">
+      <h2>最近动态</h2>
+      <div class="row tight" id="feed-filter" style="margin-bottom:14px"></div>
+      <div id="feed"></div>
+    </div>
+
+    <div class="card">
+      <h2>去做点什么</h2>
+      <div class="row" id="home-entries" style="margin-top:2px"></div>
+    </div>
+  </section>
+
   <!-- ── 30 天目标 ── -->
-  <section class="pane" id="pane-goals">
+  <section class="pane" id="pane-goals" hidden>
     <div class="card">
       <h2>新建 30 天小目标</h2>
       <div class="row">
