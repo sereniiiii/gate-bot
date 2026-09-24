@@ -328,6 +328,29 @@ details[open] summary{margin-bottom:11px}
 .legend .kd.lv2{background:color-mix(in srgb, var(--series-1) 26%, var(--surface-1))}
 .legend .kd.lv3{background:color-mix(in srgb, var(--series-1) 42%, var(--surface-1))}
 
+/* ══════════════════════════════════════════════════════════════
+   今日完成情况：选「属于哪个大任务」的 chip
+   用 chip 不用下拉：大任务通常三五个，全摊开一眼扫完比展开菜单快
+   ══════════════════════════════════════════════════════════════ */
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+.chip{display:inline-flex;align-items:center;gap:7px;max-width:100%;
+  font-size:12.5px;font-weight:550;padding:6px 11px;border-radius:9px;
+  background:var(--surface-1);border:1px solid var(--border);
+  color:var(--text-secondary);cursor:pointer}
+.chip:hover{background:var(--chip)}
+.chip.on{background:var(--chip);border-color:var(--series-1);color:var(--text-primary)}
+.chip .ck{flex:0 0 auto;font-size:13px;line-height:1;color:var(--muted)}
+.chip.on .ck{color:var(--series-1)}
+.chip .ct{min-width:0;max-width:26ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 这里用 secondary 不用 muted：实测 muted 在浅色底上只有 3.50:1，不到 WCAG AA。
+   和标签的区别靠字号（11px vs 12.5px）体现，不靠颜色深浅 */
+.chip .cn{flex:0 0 auto;font-size:11px;font-weight:500;color:var(--text-secondary);
+  font-variant-numeric:tabular-nums}
+
+/* 折叠区（心情与困难退到页签底部） */
+.fold{margin-bottom:16px}
+.fold-body{padding-top:4px}
+
 @media (max-width:560px){
   .pc-row .k{flex-basis:64px}
   body{padding:16px 12px 64px}

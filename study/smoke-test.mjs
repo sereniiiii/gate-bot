@@ -392,6 +392,113 @@ ok($('mo-table').textContent.includes('第 1-4 讲'), '表格视图写出那天�
 ok($('mo-table').textContent.includes('😄'), '表格视图带心情');
 ok($('mo-sub').textContent.includes('这个月推进了'), '统计副标题：' + $('mo-sub').textContent);
 
+/* ══════════════════════════════════════════════════════════════
+   本轮新增：今日完成情况
+   ══════════════════════════════════════════════════════════════ */
+
+console.log('── 今日完成情况：写一条 + 勾大任务 ──');
+tabs[3].fire('click'); await tick();          // daily
+// 假 DOM 的页签是手工造的、没有文字，页签名要去 index.html 里查
+const html = fs.readFileSync(path.join(DIR, 'index.html'), 'utf8');
+ok(/data-tab="daily"[^>]*>今日完成情况</.test(html), '页签改名为「今日完成情况」');
+ok(!/data-tab="daily"[^>]*>每日困难与心情</.test(html), '旧名字没有残留');
+ok(/id="done-picker"/.test(html) && /id="done-text"/.test(html) && /id="done-btn"/.test(html),
+  'index.html 里三个新元素都在');
+ok(/id="done-warn"/.test(html), '缺 done_at 列时的提示位也在');
+const chips = findAll($('done-picker'), (n) => n.className.includes('chip'));
+ok(chips.length === 1, '只能勾自己的大任务，对方的不该出现，实际 ' + chips.length);
+ok(chips[0].textContent.includes('学完线性代数'), 'chip 是我的大任务');
+ok(chips[0].className.includes('on'), '默认选中一个 —— 不能让人先点一下才能记');
+ok(chips[0].textContent.includes('3/3'), 'chip 上带当前进度，勾之前就知道要挂到哪');
+chips[0].fire('click'); await tick();
+ok(findAll($('done-picker'), (n) => n.className.includes('chip'))[0].className.includes('on'),
+  '再点一下仍是选中态（不会点没了）');
+
+$('done-text').value = '   ';
+$('done-btn').fire('click'); await tick();
+ok($('toast').textContent.includes('先写点东西'), '空输入被拒：' + $('toast').textContent);
+
+const nBefore = DB.subtasks.length;
+$('done-text').value = '看完第 9 讲';
+$('done-btn').fire('click'); await tick(); await tick();
+ok(DB.subtasks.length === nBefore + 1, '库里多了一条小任务');
+const added = DB.subtasks[DB.subtasks.length - 1];
+ok(added.task_id === 't1', '挂在我勾中的那个大任务下');
+ok(added.owner === ME, 'owner 是我，不是别人');
+ok(added.title === '看完第 9 讲', '内容原样写进去');
+ok(added.done === true, '直接就是已完成状态，不用再去勾一遍');
+ok(typeof added.done_at === 'string' && Math.abs(Date.now() - new Date(added.done_at).getTime()) < 60000,
+  'done_at 是刚刚，不是瞎写的');
+ok(added.seq === 4, '排在已有小任务后面（seq 4），实际 ' + added.seq);
+ok($('done-text').value === '', '记完自动清空，接着记下一条不用手动删');
+
+console.log('── 同步：大任务 / 总览 / 月行程表 / 动态流 都跟着变 ──');
+tabs[2].fire('click'); await tick();          // tasks
+const segBar1 = findAll($('tasks-cols'), (n) => /\bseg\b/.test(n.className))[0];
+ok(findAll(segBar1, (n) => /\bsq\b/.test(n.className)).length === 4, '大任务从 3 段变 4 段');
+ok(findAll(segBar1, (n) => /\bsq\b/.test(n.className)).every((x) => /\bon\b/.test(x.className)),
+  '4 段全亮');
+ok($('ov-sub').textContent.includes('已完成 4 个'), '总览统计跟着变：' + $('ov-sub').textContent);
+ok(findAll($('ov-list'), (n) => n.className.includes('ov-row'))[0].textContent.includes('4 / 4'),
+  '总览里我的变成 4 / 4');
+
+tabs[1].fire('click'); await tick();          // goals → 月行程表
+if (inThisMonth) {
+  ok(dcOf(now.getDate()) === '3', '月行程表今天从 2 件变 3 件，实际「' + dcOf(now.getDate()) + '」');
+}
+tabs[0].fire('click'); await tick();          // home
+ok($('feed').textContent.includes('看完第 9 讲'), '主页动态流出现这条');
+
+console.log('── 今日完成情况列表：两人分栏、可撤销 ──');
+tabs[3].fire('click'); await tick();
+ok($('done-sub').textContent.includes('今天'), '计数行：' + $('done-sub').textContent);
+ok($('done-cols').textContent.includes('看完第 9 讲'), '列表里能看到刚记的这条');
+ok($('done-cols').textContent.includes('学完线性代数'), '并标出它属于哪个大任务');
+ok(findAll($('done-cols'), (n) => n.className.includes('who')).length === 2, '两人分栏');
+const undoBtn = btns($('done-cols'), '撤销完成').pop();
+ok(!!undoBtn, '我这边有「撤销完成」');
+undoBtn.fire('click'); await tick(); await tick();
+ok(added.done === false, '撤销后回到未完成状态');
+ok(added.done_at === null, 'done_at 一并清掉，不会留在日历上');
+tabs[2].fire('click'); await tick();
+ok($('ov-sub').textContent.includes('已完成 3 个'), '总览跟着退回去：' + $('ov-sub').textContent);
+
+console.log('── 回车提交 + 中文输入法选词不误触 ──');
+tabs[3].fire('click'); await tick();
+$('done-text').value = '第 10 讲也看完了';
+$('done-text').fire('keydown', { key: 'Enter', isComposing: false, preventDefault() {} });
+await tick(); await tick();
+ok(DB.subtasks.some((x) => x.title === '第 10 讲也看完了' && x.done), '回车也能提交');
+const nCompose = DB.subtasks.length;
+$('done-text').value = '输入法还没选完词';
+$('done-text').fire('keydown', { key: 'Enter', isComposing: true, preventDefault() {} });
+await tick();
+ok(DB.subtasks.length === nCompose, '中文输入法选词时的回车不会误提交（否则打中文必炸）');
+$('done-text').value = 'keyCode 229 兜底';
+$('done-text').fire('keydown', { key: 'Enter', isComposing: false, keyCode: 229, preventDefault() {} });
+await tick();
+ok(DB.subtasks.length === nCompose, 'isComposing 失灵时靠 keyCode 229 也挡得住');
+$('done-text').value = '';
+
+console.log('── 心情与困难：没被删掉，退到折叠区 ──');
+ok($('d-moods').children.length === 5, '心情 5 档按钮还在');
+ok(!!$('d-save') && !!$('d-diff') && !!$('d-note'), '困难/补充/保存都还在');
+ok($('daily-cols').textContent.includes('特征值那块卡住了'), '历史心情记录仍能列出');
+
+console.log('── 兜底：一个大任务都没有的时候 ──');
+const keepTasks = DB.tasks.slice();
+DB.tasks.length = 0;
+$('btn-refresh').fire('click'); await tick();
+tabs[3].fire('click'); await tick();
+ok($('done-picker').textContent.includes('还没有大任务'),
+  '先说清楚要先去建大任务，而不是给一个点了没反应的按钮');
+ok($('done-btn').disabled === true, '按钮被禁用，不会点了才发现没用');
+DB.tasks.push(...keepTasks);
+$('btn-refresh').fire('click'); await tick();
+tabs[3].fire('click'); await tick();
+ok($('done-btn').disabled === false, '大任务回来之后按钮恢复可用');
+ok(findAll($('done-picker'), (n) => n.className.includes('chip')).length === 1, 'chip 回来了');
+
 console.log('── 降级：库里还没加 done_at 列（她还没跑 setup-3-feed.sql）──');
 const s1row = DB.subtasks.find((x) => x.id === 's1');
 const keepAt = s1row.done_at;

@@ -56,7 +56,7 @@
     <button class="tab on" data-tab="home">主页</button>
     <button class="tab" data-tab="goals">30 天目标</button>
     <button class="tab" data-tab="tasks">大任务拆解</button>
-    <button class="tab" data-tab="daily">每日困难与心情</button>
+    <button class="tab" data-tab="daily">今日完成情况</button>
     <button class="tab" data-tab="res">学习资源</button>
     <button class="tab" data-tab="data">导出 / 导入</button>
   </nav>
@@ -153,30 +153,61 @@
     <div class="cols" id="tasks-cols"></div>
   </section>
 
-  <!-- ── 每日困难与心情 ── -->
+  <!-- ── 今日完成情况 ── -->
   <section class="pane" id="pane-daily" hidden>
     <div class="card">
-      <h2>记今天</h2>
-      <div class="row">
-        <div><label class="f" for="d-date">日期</label><input type="date" id="d-date"></div>
-        <div><label class="f">心情</label>
-          <div class="moods" id="d-moods"></div>
-        </div>
+      <h2>今天完成了什么</h2>
+      <p class="hint" style="margin-top:0">
+        写一条、勾上它属于哪个大任务，就会在那个大任务下直接生成一条已完成的小任务 ——
+        大任务的进度条和月行程表同步跟着变，不用另外再去勾一遍。
+      </p>
+      <div class="field" style="margin-top:12px">
+        <label class="f" for="done-text">完成的事</label>
+        <input type="text" id="done-text" placeholder="例如：看完《线性代数》第 5 讲">
       </div>
-      <div class="field" style="margin-top:10px">
-        <label class="f" for="d-diff">今天遇到的困难</label>
-        <textarea id="d-diff" rows="2" placeholder="卡在哪了？"></textarea>
+      <div class="field" style="margin-top:12px">
+        <label class="f">属于哪个大任务</label>
+        <div class="chips" id="done-picker"></div>
       </div>
-      <div class="field" style="margin-top:8px">
-        <label class="f" for="d-note">补充（可选）</label>
-        <input type="text" id="d-note" placeholder="想记的别的">
+      <div class="row tight" style="margin-top:14px">
+        <button class="primary" id="done-btn">记下并同步到大任务</button>
+        <span class="hint" style="margin:0">写完按回车也行</span>
       </div>
-      <div class="row tight" style="margin-top:12px">
-        <button class="primary" id="d-save">保存</button>
-        <span class="hint" id="d-status" style="margin:0"></span>
-      </div>
+      <p class="hint" id="done-warn" hidden></p>
     </div>
-    <div class="cols" id="daily-cols"></div>
+
+    <div class="card">
+      <h2>今天完成情况</h2>
+      <p class="sub" id="done-sub">…</p>
+      <div class="cols" id="done-cols" style="margin-top:14px"></div>
+    </div>
+
+    <!-- 原来的「每日困难与心情」整块保留，只是不再占页签主位。
+         月行程表右上角的小表情和主页动态流都还在用这份数据。 -->
+    <details class="fold">
+      <summary>今天的心情与困难（可选，不影响上面的记录）</summary>
+      <div class="fold-body">
+        <div class="row">
+          <div><label class="f" for="d-date">日期</label><input type="date" id="d-date"></div>
+          <div><label class="f">心情</label>
+            <div class="moods" id="d-moods"></div>
+          </div>
+        </div>
+        <div class="field" style="margin-top:10px">
+          <label class="f" for="d-diff">今天遇到的困难</label>
+          <textarea id="d-diff" rows="2" placeholder="卡在哪了？"></textarea>
+        </div>
+        <div class="field" style="margin-top:8px">
+          <label class="f" for="d-note">补充（可选）</label>
+          <input type="text" id="d-note" placeholder="想记的别的">
+        </div>
+        <div class="row tight" style="margin-top:12px">
+          <button class="primary" id="d-save">保存</button>
+          <span class="hint" id="d-status" style="margin:0"></span>
+        </div>
+        <div class="cols" id="daily-cols" style="margin-top:16px"></div>
+      </div>
+    </details>
   </section>
 
   <!-- ── 学习资源 ── -->

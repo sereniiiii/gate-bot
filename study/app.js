@@ -41,6 +41,7 @@
     tab: 'home',          // 登录后落在主页
     mood: null,
     month: '',            // 月行程表显示哪个月 'YYYY-MM'，空 = 本月
+    doneTask: null,       // 「今日完成情况」里勾中的大任务 id
     resScope: 'all',      // all | me | other
     feedKind: 'all',      // all | done | log | res
     noDoneAt: false,      // 库里还没加 done_at 列时置位（setup-3-feed.sql 跑之前）
@@ -242,6 +243,21 @@
     return true;
   }
 
+  /* 「今日完成情况」里记一件完成的事 = 直接在那个大任务下建一条已完成的小任务。
+     这么做的好处在于是同一份数据：大任务的进度条、月行程表、主页动态流
+     全都自动跟着变，不需要各自维护一套。
+     同 setDone，库里还没有 done_at 列时自动退化成不写时间戳。 */
+  function insertDoneSub(row) {
+    const full = Object.assign({}, row, { done: true, done_at: new Date().toISOString() });
+    return sb.from('subtasks').insert(full).then((r) => {
+      if (r.error && /done_at/i.test(r.error.message)) {
+        S.noDoneAt = true;
+        return sb.from('subtasks').insert(Object.assign({}, row, { done: true }));
+      }
+      return r;
+    });
+  }
+
   /* 勾选完成时顺便写 done_at（主页动态流靠它排序）。
      旧库还没加这一列时自动退化成只写 done —— 按钮不会因此点不动。 */
   function setDone(table, id, done, patch) {
@@ -286,9 +302,15 @@
     return m;
   }
 
-  function twoCols(container, rows, renderOne) {
+  function twoCols(container, rows, renderOne, opts) {
     clear(container);
     const m = groupByOwner(rows);
+    /* 「今日完成情况」这类按天过滤的列表要传 {everyone:true}：
+       不过滤的话对方今天没动那一栏会整个消失，分不清是「今天没记」还是「根本没这个人」。
+       其余页签保持原样 —— 他们没建过目标时不留空栏，是原来就定好的行为。 */
+    if (opts && opts.everyone) {
+      Object.keys(S.profileMap).forEach((id) => { if (!m[id]) m[id] = []; });
+    }
     const ids = Object.keys(m).sort((a, b) => {
       if (a === S.me.id) return -1;
       if (b === S.me.id) return 1;
@@ -680,8 +702,143 @@
     );
   }
 
-  /* ── 页签三：每日困难与心情 ────────────────────────────────── */
+  /* ── 页签三：今日完成情况 ──────────────────────────────────── */
+  /* 主体是「今天完成了什么」：写一条 + 勾它属于哪个大任务 → 同步进那个大任务。
+     原有的心情/困难降级到页签底部折叠区，没有删 —— 月行程表右上角的小表情
+     和主页动态流都还在用这份数据，把录入入口去掉的话那些就变成只能看不能记了。 */
   function renderDaily() {
+    renderDoneForm();
+    renderDoneList();
+    renderDoneSummary();
+    renderMoodList();
+    prefillDay();
+  }
+
+  /* 谁今天完成了几件；顺带说明「缺 done_at 列」这个会让列表看起来空掉的原因 */
+  function renderDoneSummary() {
+    const t = today();
+    const myId = S.me && S.me.id;
+    const ids = Object.keys(S.profileMap);
+    if (myId && ids.indexOf(myId) < 0) ids.push(myId);
+    ids.sort((a, b) => (a === myId ? -1 : 0) - (b === myId ? -1 : 0));
+    const cnt = (id) => S.subtasks.filter((x) => x.owner === id && x.done && isoDate(x.done_at) === t).length;
+
+    const total = ids.reduce((sum, id) => sum + cnt(id), 0);
+    $('done-sub').textContent = total
+      ? '今天 · ' + ids.map((id) => nameOf(id) + ' ' + cnt(id) + ' 件').join(' · ')
+      : '今天两个人都还没有记录。';
+
+    const warn = $('done-warn');
+    const noTime = S.subtasks.filter((x) => x.done && !x.done_at && isMine(x)).length;
+    if (noTime) {
+      warn.textContent = '注意：你有 ' + noTime + ' 条已完成的记录没有完成时间（库里还缺 done_at 列），' +
+        '所以不会出现在下面的「今天完成情况」里，月行程表上也看不到。' +
+        '去 Supabase 后台跑一次 study/setup-3-feed.sql 就好；在那之前新记的会正常带上时间。';
+      warn.hidden = false;
+    } else {
+      warn.hidden = true;
+    }
+  }
+
+  /* 大任务选择器。用 chip 而不是下拉：大任务通常就几个，一眼看全比展开菜单快 */
+  function renderDoneForm() {
+    const box = $('done-picker');
+    const btn = $('done-btn');
+    clear(box);
+
+    const mine = S.tasks.filter(isMine);
+    if (!mine.length) {
+      S.doneTask = null;
+      box.appendChild(h('p', { class: 'hint', style: { margin: '0' },
+        text: '你还没有大任务。先去「大任务拆解」建一个 —— 完成的事要挂在某个大任务下，才能同步过去。' }));
+      btn.disabled = true;
+      return;
+    }
+    if (!mine.some((t) => t.id === S.doneTask)) S.doneTask = mine[0].id;
+
+    mine.forEach((t) => {
+      const on = S.doneTask === t.id;
+      const subs = S.subtasks.filter((x) => x.task_id === t.id);
+      const dn = subs.filter((x) => x.done).length;
+      box.appendChild(h('button', {
+        type: 'button',
+        class: 'chip' + (on ? ' on' : ''),
+        'aria-pressed': on ? 'true' : 'false',
+        onclick: () => { S.doneTask = t.id; renderDoneForm(); },
+      },
+        h('span', { class: 'ck', text: on ? '☑' : '☐' }),
+        h('span', { class: 'ct', text: t.title || '(无标题)' }),
+        h('span', { class: 'cn', text: dn + '/' + subs.length })
+      ));
+    });
+    btn.disabled = false;
+  }
+
+  /* 今天完成的事 —— 直接来自 subtasks，谁的都列出来。
+     不新开一张表：完成的事本来就是大任务的小任务，复用同一份数据才不会两处对不上。 */
+  function renderDoneList() {
+    const t = today();
+    const rows = S.subtasks.filter((x) => x.done && isoDate(x.done_at) === t);
+    twoCols($('done-cols'), rows, (owner, list, mine) => {
+      if (!list.length) return emptyNote(mine ? '今天还没记。上面写一条。' : '对方今天还没记。');
+      const wrap = h('div');
+      for (const x of list.slice(0, 60)) {
+        const par = S.tasks.find((z) => z.id === x.task_id);
+        wrap.appendChild(
+          h('div', { class: 'item done' },
+            h('div', { class: 't' },
+              h('span', { class: 'grow', text: x.title || '(未填写)' }),
+              h('span', { class: 'pill ok', text: '已完成' })
+            ),
+            h('div', { class: 'm' },
+              h('span', { class: 'pill', text: '→ ' + (par ? (par.title || '(无标题)') : '大任务已删除') }),
+              h('span', { text: relTime(x.done_at) })
+            ),
+            mine ? h('div', { class: 'acts' },
+              h('button', {
+                class: 'tiny', text: '撤销完成',
+                title: '改回未完成，它会回到大任务里继续待办',
+                onclick: () => commit(setDone('subtasks', x.id, false), '已撤销，它回到大任务里待办了'),
+              }),
+              h('button', {
+                class: 'tiny danger', text: '删除',
+                title: '从大任务里彻底删掉这一条',
+                onclick: () => removeRow('subtasks', x.id, '「' + (x.title || '未填写') + '」这一条'),
+              })
+            ) : null
+          )
+        );
+      }
+      return wrap;
+    }, { everyone: true });
+  }
+
+  /* 新增：写一条 + 同步到大任务 */
+  async function addDone() {
+    const inp = $('done-text');
+    const btn = $('done-btn');
+    const v = inp.value.trim();
+    if (!v) { toast('先写点东西：今天完成了什么', true); inp.focus(); return; }
+    const task = S.tasks.find((x) => x.id === S.doneTask && isMine(x));
+    if (!task) { toast('先在上面勾一个它属于哪个大任务', true); return; }
+
+    const subs = S.subtasks.filter((x) => x.task_id === task.id);
+    const seq = subs.length ? Math.max(...subs.map((x) => x.seq || 0)) + 1 : 1;
+
+    btn.disabled = true;
+    const { error } = await insertDoneSub({
+      task_id: task.id, owner: S.me.id, seq: seq, title: v, detail: '',
+    });
+    btn.disabled = false;
+    if (error) { toast('没记上：' + error.message, true); return; }
+
+    inp.value = '';
+    toast('记下了，已同步到「' + (task.title || '无标题') + '」');
+    await refresh();
+  }
+
+  /* 心情与困难：原「每日困难与心情」的内容，整块保留，只是不再占页签主位 */
+  function renderMoodList() {
     twoCols($('daily-cols'), S.daily, (owner, rows, mine) => {
       if (!rows.length) return emptyNote(mine ? '还没记过。上面写一条。' : '对方还没记过。');
       const wrap = h('div');
@@ -709,7 +866,6 @@
       }
       return wrap;
     });
-    prefillDay();
   }
 
   function setMood(v) {
@@ -1176,7 +1332,7 @@
     clear(box);
     [['goals', '30 天目标', '看谁在跑什么目标'],
      ['tasks', '大任务拆解', '推进小任务进度'],
-     ['daily', '每日困难与心情', '记今天'],
+     ['daily', '今日完成情况', '记下今天完成了什么'],
      ['res', '学习资源', '工具书 / 网课 / 老师'],
      ['data', '导出 / 导入', '存一份完整快照']]
       .forEach(([tab, name, desc]) => box.appendChild(h('button', {
@@ -1259,6 +1415,17 @@
       else toast('已创建，拆成 ' + n + ' 个小任务');
       $('t-title').value = ''; $('t-detail').value = '';
       await refresh();
+    });
+
+    /* 今日完成情况：点按钮记一条，回车也记 —— 记流水账时不该被迫去够鼠标 */
+    $('done-btn').addEventListener('click', addDone);
+    /* isComposing 之外再挡一道 keyCode 229 —— 中文输入法选词时的回车
+       在部分浏览器上 isComposing 是 false，不挡的话打中文必被误提交 */
+    $('done-text').addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      if (e.isComposing || e.keyCode === 229) return;
+      e.preventDefault();
+      addDone();
     });
 
     $('d-date').addEventListener('change', prefillDay);
