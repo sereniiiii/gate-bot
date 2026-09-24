@@ -41,7 +41,9 @@
     tab: 'home',          // 登录后落在主页
     mood: null,
     month: '',            // 月行程表显示哪个月 'YYYY-MM'，空 = 本月
-    doneTask: null,       // 「今日完成情况」里勾中的大任务 id
+    doneKind: 'task',     // 「今日完成情况」挂到哪：'task' 大任务 | 'res' 学习资源
+    doneRef: null,        // 挂到哪一条（大任务 id 或资源 id）
+    doneChapter: null,    // 挂资源时，勾的是那一章的 subtask id
     resScope: 'all',      // all | me | other
     feedKind: 'all',      // all | done | log | res
     noDoneAt: false,      // 库里还没加 done_at 列时置位（setup-3-feed.sql 跑之前）
@@ -159,6 +161,28 @@
   }
   const isMine = (row) => !!S.me && row.owner === S.me.id;
 
+  /* 一条 subtask 的父项可能是大任务，也可能是学习资源（一本书 / 一门网课）——
+     二选一，由 setup-4-chapters.sql 里的 subtasks_one_parent 约束保证。
+     所以凡是要「往上找父项」的地方都走这几个函数，别各写一遍 if。 */
+  const subsOfTask = (id) => S.subtasks.filter((x) => x.task_id === id);
+  const subsOfRes  = (id) => S.subtasks.filter((x) => x.resource_id === id);
+  function parentOf(x) {
+    return x.task_id ? S.tasks.find((t) => t.id === x.task_id)
+                     : S.resources.find((r) => r.id === x.resource_id);
+  }
+  /* 大任务有 title，资源有 name，取名字的地方不一样 */
+  const parentName = (x) => {
+    const p = parentOf(x);
+    return p ? (p.title || p.name || '(无标题)') : null;
+  };
+  const parentIsRes = (x) => !x.task_id && !!x.resource_id;
+  /* 「属于哪儿」的人话说法，动态流和列表都用它 */
+  const parentLabel = (x) => {
+    const n = parentName(x);
+    if (n === null) return parentIsRes(x) ? '资源已删除' : '大任务已删除';
+    return (parentIsRes(x) ? '资源 · ' : '大任务 · ') + n;
+  };
+
   /* 头像：有图用图，没图就用自己的名字首字兜底（不是默认灰头像，两个人颜色可区分） */
   function avatarEl(id, cls) {
     const url = S.avatarMap[id];
@@ -256,6 +280,29 @@
       }
       return r;
     });
+  }
+
+  /* 库还没跑 setup-4-chapters.sql 时，提到 resource_id 的报错会被原样吐出来，
+     对方看不懂。翻译成一句能直接照做的中文。 */
+  function schemaWarn(error) {
+    const m = error && error.message ? error.message : String(error || '');
+    if (/resource_id/i.test(m)) {
+      return '库里还没有章节字段。去 Supabase 后台跑一次 study/setup-4-chapters.sql 再回来。';
+    }
+    return m;
+  }
+
+  /* 给某个资源加一章。seq 接在现有最大序号后面，不重排已有的 ——
+     重排会把「第 5 章」改成别的序号，她勾过的完成状态就对不上了。 */
+  async function addChapter(r, existing, title) {
+    const seq = existing.length ? Math.max(...existing.map((x) => x.seq || 0)) + 1 : 1;
+    const { error } = await sb.from('subtasks').insert({
+      resource_id: r.id, owner: S.me.id, seq: seq,
+      title: title || ('第 ' + seq + ' 章'), detail: '',
+    });
+    if (error) { toast(schemaWarn(error), true); return false; }
+    await refresh();
+    return true;
   }
 
   /* 勾选完成时顺便写 done_at（主页动态流靠它排序）。
@@ -434,8 +481,7 @@
       if (e) {
         e.goals.forEach((g) => bits.push('完成目标：' + (g.title || '(无标题)')));
         e.subs.forEach((x) => {
-          const par = S.tasks.find((z) => z.id === x.task_id);
-          bits.push('完成小任务：' + (x.title || '(未填写)') + (par ? ' —— ' + par.title : ''));
+          bits.push('完成：' + (x.title || '(未填写)') + ' —— ' + parentLabel(x));
         });
         if (e.log) {
           bits.push('心情 ' + (MOODS[e.log.mood - 1] || '—') +
@@ -512,8 +558,7 @@
       const what = [];
       e.goals.forEach((g) => what.push('完成目标：' + (g.title || '(无标题)')));
       e.subs.forEach((x) => {
-        const par = S.tasks.find((z) => z.id === x.task_id);
-        what.push('完成小任务：' + (x.title || '(未填写)') + (par ? ' —— ' + par.title : ''));
+        what.push('完成：' + (x.title || '(未填写)') + ' —— ' + parentLabel(x));
       });
       rows.push([
         key,
@@ -656,7 +701,10 @@
     });
   }
 
+  /* 一行小任务 / 一章。两者是同一张表里的同一种东西，只是挂的父不同，
+     所以共用这一个渲染函数，文案靠 sub 挂在哪边自己判断，不给调用方加参数。 */
   function subRow(sub, mine) {
+    const isCh = parentIsRes(sub);
     const box = h('div', { class: 'sub' + (sub.done ? ' done' : '') },
       h('input', {
         type: 'checkbox', checked: !!sub.done, disabled: !mine,
@@ -672,7 +720,7 @@
     if (mine) {
       box.appendChild(h('input', {
         type: 'text', class: 'grow', value: sub.title || '',
-        placeholder: '这一步要干什么',
+        placeholder: isCh ? '这一章叫什么' : '这一步要干什么',
         title: sub.detail || '',
         style: sub.done ? { opacity: '.6' } : null,
         onchange: async (e) => {
@@ -685,7 +733,7 @@
       box.appendChild(h('button', {
         class: 'tiny danger', text: '✕',
         onclick: async () => {
-          if (!confirm('删掉这个小任务？')) return;
+          if (!confirm(isCh ? '删掉这一章？' : '删掉这个小任务？')) return;
           await commit(sb.from('subtasks').delete().eq('id', sub.id));
         },
       }));
@@ -740,38 +788,117 @@
     }
   }
 
-  /* 大任务选择器。用 chip 而不是下拉：大任务通常就几个，一眼看全比展开菜单快 */
+  /* 挂到哪。chip 分两组：大任务 / 学习资源，只能选一个。
+     用 chip 而不是下拉：通常就几个，一眼看全比展开菜单快。
+     右侧 n/m 是这个父下面已经完成几件 —— 挑的时候不用来回翻页。
+
+     选了资源会多出第三组「第几章」。两种模式语义不一样，所以按钮和输入框跟着换：
+       挂大任务 = 写一件做过的事 → 在那个大任务下**新建**一条已完成的小任务
+       挂资源   = 勾掉这本书的某一章 → 直接改那一章的状态，**不新增行**
+     后者是她原话「每日任务勾选对应的章节」：书就那么几章，
+     不该每读完一章就往书里再长出一章。 */
   function renderDoneForm() {
     const box = $('done-picker');
     const btn = $('done-btn');
+    const lead = $('done-lead');
+    const twrap = $('done-text-wrap');
+    const plabel = $('done-picker-label');
+    const tip = $('done-tip');
     clear(box);
 
-    const mine = S.tasks.filter(isMine);
-    if (!mine.length) {
-      S.doneTask = null;
+    const groups = [
+      ['task', '大任务', S.tasks.filter(isMine)],
+      ['res', '学习资源', S.resources.filter(isMine)],
+    ].filter((g) => g[2].length);
+
+    if (!groups.length) {
+      S.doneRef = null;
       box.appendChild(h('p', { class: 'hint', style: { margin: '0' },
-        text: '你还没有大任务。先去「大任务拆解」建一个 —— 完成的事要挂在某个大任务下，才能同步过去。' }));
+        text: '你还没有大任务、也没有学习资源。先去「大任务拆解」或「学习资源」建一个 —— ' +
+              '完成的事要挂在某样东西下面，才能同步过去。' }));
       btn.disabled = true;
       return;
     }
-    if (!mine.some((t) => t.id === S.doneTask)) S.doneTask = mine[0].id;
 
-    mine.forEach((t) => {
-      const on = S.doneTask === t.id;
-      const subs = S.subtasks.filter((x) => x.task_id === t.id);
-      const dn = subs.filter((x) => x.done).length;
-      box.appendChild(h('button', {
-        type: 'button',
-        class: 'chip' + (on ? ' on' : ''),
-        'aria-pressed': on ? 'true' : 'false',
-        onclick: () => { S.doneTask = t.id; renderDoneForm(); },
-      },
-        h('span', { class: 'ck', text: on ? '☑' : '☐' }),
-        h('span', { class: 'ct', text: t.title || '(无标题)' }),
-        h('span', { class: 'cn', text: dn + '/' + subs.length })
+    /* 选中的那个可能刚被删掉 / 或还没选过，退回第一组的第一个 */
+    const alive = groups.find(([k, , rows]) => k === S.doneKind && rows.some((r) => r.id === S.doneRef));
+    if (!alive) { S.doneKind = groups[0][0]; S.doneRef = groups[0][2][0].id; }
+
+    groups.forEach(([kind, label, rows]) => {
+      box.appendChild(h('div', { class: 'chips-group' },
+        h('span', { class: 'cg-label', text: label }),
+        h('div', { class: 'chips' },
+          rows.map((r) => {
+            const on = S.doneKind === kind && S.doneRef === r.id;
+            const subs = kind === 'task' ? subsOfTask(r.id) : subsOfRes(r.id);
+            const dn = subs.filter((x) => x.done).length;
+            return h('button', {
+              type: 'button',
+              class: 'chip' + (on ? ' on' : ''),
+              'aria-pressed': on ? 'true' : 'false',
+              onclick: () => { S.doneKind = kind; S.doneRef = r.id; renderDoneForm(); },
+            },
+              h('span', { class: 'ck', text: on ? '☑' : '☐' }),
+              h('span', { class: 'ct', text: r.title || r.name || '(无标题)' }),
+              h('span', { class: 'cn', text: dn + '/' + subs.length })
+            );
+          })
+        )
       ));
     });
-    btn.disabled = false;
+
+    const isRes = S.doneKind === 'res';
+    const parent = isRes ? S.resources.find((r) => r.id === S.doneRef) : null;
+    const chs = parent ? subsOfRes(parent.id) : [];
+
+    if (isRes && chs.length) {
+      /* 默认落在第一章还没勾的 —— 顺着往下读的人不用每次自己点 */
+      if (!chs.some((x) => x.id === S.doneChapter)) {
+        S.doneChapter = (chs.find((x) => !x.done) || chs[0]).id;
+      }
+      box.appendChild(h('div', { class: 'chips-group' },
+        h('span', { class: 'cg-label', text: '第几章' }),
+        h('div', { class: 'chips' },
+          chs.map((x) => {
+            const on = S.doneChapter === x.id;
+            return h('button', {
+              type: 'button',
+              class: 'chip' + (on ? ' on' : '') + (x.done ? ' done' : ''),
+              'aria-pressed': on ? 'true' : 'false',
+              title: x.done ? '这一章已经勾过了' : '',
+              onclick: () => { S.doneChapter = x.id; renderDoneForm(); },
+            },
+              h('span', { class: 'ck', text: x.done ? '✅' : (on ? '☑' : '☐') }),
+              h('span', { class: 'ct', text: x.title || '(未填写)' })
+            );
+          })
+        )
+      ));
+    }
+
+    if (isRes) {
+      twrap.hidden = true;
+      plabel.textContent = '属于哪本书 / 哪门课';
+      if (!chs.length) {
+        btn.disabled = true;
+        btn.textContent = '这本书还没分章';
+        tip.textContent = '先去「学习资源」里给它「＋ 分章」';
+      } else {
+        btn.disabled = false;
+        btn.textContent = '勾选这一章';
+        tip.textContent = '勾完，这本书的章节进度条立刻跟着变';
+      }
+      lead.textContent = '选中一本书 / 一门课，再勾掉这次读完的那一章 —— ' +
+        '这本书的进度条、月行程表会同步更新，不用再去资源页点一遍。';
+    } else {
+      twrap.hidden = false;
+      btn.disabled = false;
+      btn.textContent = '记下并同步到大任务';
+      tip.textContent = '写完按回车也行';
+      plabel.textContent = '属于哪个大任务';
+      lead.textContent = '写一条、勾上它属于哪个大任务，就会在那个大任务下直接生成一条已完成的小任务 —— ' +
+        '大任务的进度条和月行程表同步跟着变，不用另外再去勾一遍。';
+    }
   }
 
   /* 今天完成的事 —— 直接来自 subtasks，谁的都列出来。
@@ -783,7 +910,6 @@
       if (!list.length) return emptyNote(mine ? '今天还没记。上面写一条。' : '对方今天还没记。');
       const wrap = h('div');
       for (const x of list.slice(0, 60)) {
-        const par = S.tasks.find((z) => z.id === x.task_id);
         wrap.appendChild(
           h('div', { class: 'item done' },
             h('div', { class: 't' },
@@ -791,7 +917,7 @@
               h('span', { class: 'pill ok', text: '已完成' })
             ),
             h('div', { class: 'm' },
-              h('span', { class: 'pill', text: '→ ' + (par ? (par.title || '(无标题)') : '大任务已删除') }),
+              h('span', { class: 'pill' + (parentIsRes(x) ? ' res' : ''), text: '→ ' + parentLabel(x) }),
               h('span', { text: relTime(x.done_at) })
             ),
             mine ? h('div', { class: 'acts' },
@@ -813,16 +939,38 @@
     }, { everyone: true });
   }
 
-  /* 新增：写一条 + 同步到大任务 */
+  /* 新增。两种模式：
+       大任务 —— 新建一条已完成的小任务（那个大任务本来就没什么固定条目）
+       资源   —— 把选中的那一章勾掉（书的章节数是固定的，不该越读越多） */
   async function addDone() {
     const inp = $('done-text');
     const btn = $('done-btn');
+
+    if (S.doneKind === 'res') {
+      const r = S.resources.find((x) => x.id === S.doneRef && isMine(x));
+      if (!r) { toast('先在上面选一本书 / 一门课', true); return; }
+      const ch = subsOfRes(r.id).find((x) => x.id === S.doneChapter);
+      if (!ch) { toast('再选一章', true); return; }
+      if (ch.done) {
+        toast('「' + (ch.title || '这一章') + '」已经勾过了', true);
+        return;
+      }
+      btn.disabled = true;
+      const { error } = await setDone('subtasks', ch.id, true);
+      btn.disabled = false;
+      if (error) { toast('没勾上：' + schemaWarn(error), true); return; }
+      toast('勾上了：' + (ch.title || '这一章') + ' · ' + (r.name || ''));
+      await refresh();
+      return;
+    }
+
     const v = inp.value.trim();
     if (!v) { toast('先写点东西：今天完成了什么', true); inp.focus(); return; }
-    const task = S.tasks.find((x) => x.id === S.doneTask && isMine(x));
+
+    const task = S.tasks.find((x) => x.id === S.doneRef && isMine(x));
     if (!task) { toast('先在上面勾一个它属于哪个大任务', true); return; }
 
-    const subs = S.subtasks.filter((x) => x.task_id === task.id);
+    const subs = subsOfTask(task.id);
     const seq = subs.length ? Math.max(...subs.map((x) => x.seq || 0)) + 1 : 1;
 
     btn.disabled = true;
@@ -830,7 +978,7 @@
       task_id: task.id, owner: S.me.id, seq: seq, title: v, detail: '',
     });
     btn.disabled = false;
-    if (error) { toast('没记上：' + error.message, true); return; }
+    if (error) { toast('没记上：' + schemaWarn(error), true); return; }
 
     inp.value = '';
     toast('记下了，已同步到「' + (task.title || '无标题') + '」');
@@ -910,6 +1058,12 @@
       if (!rows.length) return emptyNote(mine ? '还没添加资源。' : '对方还没添加资源。');
       const wrap = h('div');
       for (const r of rows) {
+        /* 这一本书 / 这门课被拆成几章、完成到哪了。章就是 subtasks，
+           和「今天完成情况」勾的是同一批行 —— 那边勾一下，这里立刻亮一段。 */
+        const subs = subsOfRes(r.id);
+        const dn = subs.filter((x) => x.done).length;
+        const pp = subs.length ? pct(dn, subs.length) : 0;
+
         wrap.appendChild(
           h('div', { class: 'item' },
             h('div', { class: 't' },
@@ -918,6 +1072,27 @@
             ),
             (r.platform || r.subject) ? h('div', { class: 'd' },
               [r.platform, r.subject].filter(Boolean).join(' · ')) : null,
+            subs.length ? h('div', { class: 'bar seg' },
+              subs.map((x, i) => h('i', {
+                class: 'sq' + (x.done ? ' on' : ''),
+                title: '第 ' + (i + 1) + ' 章：' + (x.title || '(未填写)') + (x.done ? ' ✅ 已完成' : ' ⬜ 未完成'),
+              }))
+            ) : null,
+            subs.length ? h('div', { class: 'bar-txt' },
+              h('span', { text: '共 ' + subs.length + ' 章，已完成 ' + dn + ' 章' }),
+              h('span', { class: 'pct' + (pp === 100 ? ' full' : ''), text: pp + '%' })
+            ) : null,
+            subs.length ? h('details', { class: 'subs-fold' },
+              h('summary', { text: '章节清单（' + dn + ' / ' + subs.length + '）' }),
+              h('div', { class: 'subs' }, subs.map((x) => subRow(x, mine))),
+              mine ? h('div', { class: 'acts' },
+                h('button', { class: 'tiny', text: '＋ 加一章', onclick: () => addChapter(r, subs) })) : null
+            ) : (mine ? h('div', { class: 'acts' },
+              h('button', {
+                class: 'tiny', text: '＋ 分章',
+                title: '把这本书 / 这门课拆成章节，就能一章一章勾进度',
+                onclick: () => addChapter(r, subs),
+              })) : null),
             mine ? h('div', { class: 'm' },
               h('span', { text: '状态' }),
               h('select', {
@@ -1196,11 +1371,11 @@
     }
     for (const s of S.subtasks) {
       if (!s.done) continue;
-      const task = S.tasks.find((x) => x.id === s.task_id);
       ev.push({
         owner: s.owner, at: s.done_at || null, kind: 'done',
-        text: '完成小任务 ', strong: s.title || '（还没填名字）',
-        sub: task ? task.title : '',
+        text: parentIsRes(s) ? '完成章节 ' : '完成小任务 ',
+        strong: s.title || (parentIsRes(s) ? '（还没填章节名）' : '（还没填名字）'),
+        sub: parentName(s) || (parentIsRes(s) ? '（资源已删除）' : '（大任务已删除）'),
       });
     }
     for (const d of S.daily) {
@@ -1446,12 +1621,46 @@
     $('r-add').addEventListener('click', async () => {
       const name = $('r-name').value.trim();
       if (!name) { toast('先写名称', true); return; }
-      const ok = await commit(sb.from('resources').insert({
+      const btn = $('r-add');
+      btn.disabled = true;
+      /* .select().single() 是为了拿回新行的 id —— 要拿它去建章节 */
+      const { data, error } = await sb.from('resources').insert({
         owner: S.me.id, kind: $('r-kind').value, name: name,
         platform: $('r-platform').value.trim(), subject: $('r-subject').value.trim(),
         url: '', status: $('r-status').value,
-      }), '已添加');
-      if (ok) { $('r-name').value = ''; $('r-platform').value = ''; $('r-subject').value = ''; }
+      }).select().single();
+
+      if (error) {
+        btn.disabled = false;
+        toast(error.message, true);
+        return;
+      }
+
+      /* 建的时候填了「共几章」就一次生成好，省得进去点 n 次「＋ 加一章」 */
+      const n = Math.max(0, Math.min(200, parseInt($('r-chapters').value, 10) || 0));
+      let chErr = null;
+      if (n && data && data.id) {
+        const list = [];
+        for (let i = 1; i <= n; i++) {
+          list.push({ resource_id: data.id, owner: S.me.id, seq: i, title: '第 ' + i + ' 章', detail: '' });
+        }
+        const res = await sb.from('subtasks').insert(list);
+        chErr = res.error;
+      }
+      btn.disabled = false;
+
+      if (chErr) {
+        /* 资源本身建好了，只是章节没建成（多半是 SQL 还没跑）—— 如实说清楚，
+           别说成「添加失败」让她以为白填了一遍 */
+        toast('资源已加，但章节没生成：' + schemaWarn(chErr), true);
+      } else {
+        toast(n ? '已添加，并生成 ' + n + ' 章' : '已添加');
+      }
+      $('r-name').value = '';
+      $('r-platform').value = '';
+      $('r-subject').value = '';
+      $('r-chapters').value = '';
+      await refresh();
     });
 
     $('btn-export').addEventListener('click', doExport);

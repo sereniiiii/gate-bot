@@ -122,6 +122,9 @@ const DB = {
   ],
 };
 let seq = 100;
+/* 假库默认不认识列名，插什么都能成。要测「她还没跑 SQL」那条路，
+   得能人为让下一次写操作失败 —— 用法：failNext = 'column "resource_id" does not exist' */
+let failNext = null;
 function qb(table) {
   const st = { op: 'select', eq: null, single: false };
   const o = {
@@ -136,6 +139,9 @@ function qb(table) {
     // 否则 setDone() 里的 .then(cb) 链式调用会拿到 undefined
     then(res, rej) {
       return new Promise((resolve) => {
+        /* 只让**写**操作失败。读也一起失败的话整页刷新就空掉了，
+           测出来的就不是「这一列不存在」而是「整个页面崩了」。 */
+        if (failNext && st.op !== 'select') { const m = failNext; failNext = null; resolve({ data: null, error: { message: m } }); return; }
         const T = (DB[table] = DB[table] || []);
         const hit = (x) => !st.eq || x[st.eq[0]] === st.eq[1];
         let data = null;
@@ -176,6 +182,10 @@ const tick = () => new Promise((r) => setTimeout(r, 30));
 const $ = (id) => document.getElementById(id);
 const walk = (n, fn) => { fn(n); (n.children || []).forEach((c) => walk(c, fn)); };
 const findAll = (root, pred) => { const o = []; walk(root, (n) => { if (pred(n)) o.push(n); }); return o; };
+/* 按 class 取元素必须整词匹配。用 className.includes('chip') 会把 chips / chips-group
+   这些**包含** chip 的类名一并捞进来 —— 加了分组容器之后计数就悄悄多出来了。 */
+const hasCls = (n, c) => String(n.className || '').split(/\s+/).includes(c);
+const byCls = (root, c) => findAll(root, (n) => hasCls(n, c));
 const find = (root, pred) => findAll(root, pred)[0] || null;
 const btns = (root, label) => findAll(root, (n) => n.tagName === 'BUTTON' && n.textContent.trim() === label);
 const inputs = (root) => findAll(root, (n) => n.tagName === 'INPUT' && n.type === 'text').map((n) => n.value);
@@ -405,14 +415,19 @@ ok(!/data-tab="daily"[^>]*>每日困难与心情</.test(html), '旧名字没有�
 ok(/id="done-picker"/.test(html) && /id="done-text"/.test(html) && /id="done-btn"/.test(html),
   'index.html 里三个新元素都在');
 ok(/id="done-warn"/.test(html), '缺 done_at 列时的提示位也在');
-const chips = findAll($('done-picker'), (n) => n.className.includes('chip'));
-ok(chips.length === 1, '只能勾自己的大任务，对方的不该出现，实际 ' + chips.length);
-ok(chips[0].textContent.includes('学完线性代数'), 'chip 是我的大任务');
-ok(chips[0].className.includes('on'), '默认选中一个 —— 不能让人先点一下才能记');
-ok(chips[0].textContent.includes('3/3'), 'chip 上带当前进度，勾之前就知道要挂到哪');
-chips[0].fire('click'); await tick();
-ok(findAll($('done-picker'), (n) => n.className.includes('chip'))[0].className.includes('on'),
+const chips = byCls($('done-picker'), 'chip');
+/* 两组：大任务 + 学习资源。我 1 个大任务 + 4 个资源，对方的一个都不能出现 */
+ok(chips.length === 5, '只列我的：1 个大任务 + 4 个资源，实际 ' + chips.length);
+ok(chips.every((c) => !c.textContent.includes('考研政治')), '对方的资源不该出现');
+const tchip = chips.find((c) => c.textContent.includes('学完线性代数'));
+ok(!!tchip, '大任务 chip 在');
+ok(tchip.className.includes('on'), '默认选中一个 —— 不能让人先点一下才能记');
+ok(tchip.textContent.includes('3/3'), 'chip 上带当前进度，勾之前就知道要挂到哪');
+tchip.fire('click'); await tick();
+ok(byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).className.includes('on'),
   '再点一下仍是选中态（不会点没了）');
+ok(byCls($('done-picker'), 'chips-group').length === 2, '分成「大任务」「学习资源」两组');
+ok($('done-picker').textContent.includes('学习资源'), '资源那一组有组名');
 
 $('done-text').value = '   ';
 $('done-btn').fire('click'); await tick();
@@ -463,8 +478,128 @@ ok(added.done_at === null, 'done_at 一并清掉，不会留在日历上');
 tabs[2].fire('click'); await tick();
 ok($('ov-sub').textContent.includes('已完成 3 个'), '总览跟着退回去：' + $('ov-sub').textContent);
 
+console.log('── 学习资源：拆成章节 + 一章一章勾 ──');
+ok(/id="r-chapters"/.test(html), 'index.html 里加了「共几章」输入框');
+tabs[4].fire('click'); await tick();          // res
+/* 刚建好的资源没有章节，这时不该凭空出现进度条 */
+const r1item = findAll($('res-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('线性代数应该这样学'));
+ok(!!r1item, '找得到 r1 这张卡片');
+ok(findAll(r1item, (n) => hasCls(n, 'seg')).length === 0, '还没分章时不出进度条（不给假进度）');
+ok(!!btns(r1item, '＋ 分章').length, '给一个「＋ 分章」入口');
+
+btns(r1item, '＋ 分章')[0].fire('click'); await tick(); await tick();
+const ch1 = DB.subtasks.filter((x) => x.resource_id === 'r1');
+ok(ch1.length === 1, '点一下加一章，实际 ' + ch1.length);
+ok(ch1[0].task_id == null, '这一章不能再挂到大任务上（二选一）');
+ok(ch1[0].title === '第 1 章', '默认给个「第 1 章」当占位，不用先想名字');
+ok(ch1[0].owner === ME, 'owner 是我');
+
+/* 再点两下 → 三章，序号要接下去而不是重排 */
+const r1item2 = findAll($('res-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('线性代数应该这样学'));
+btns(r1item2, '＋ 加一章')[0].fire('click'); await tick(); await tick();
+const r1item3 = findAll($('res-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('线性代数应该这样学'));
+btns(r1item3, '＋ 加一章')[0].fire('click'); await tick(); await tick();
+const chAll = DB.subtasks.filter((x) => x.resource_id === 'r1');
+ok(chAll.length === 3, '三章，实际 ' + chAll.length);
+ok(chAll.map((x) => x.seq).join(',') === '1,2,3', '序号依次递增，没重排已有的：' + chAll.map((x) => x.seq).join(','));
+
+const r1final = findAll($('res-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('线性代数应该这样学'));
+const chSegs = findAll(r1final, (n) => hasCls(n, 'sq'));
+ok(chSegs.length === 3, '进度条按章分段，3 章 3 段，实际 ' + chSegs.length);
+ok(chSegs.every((x) => !hasCls(x, 'on')), '一章没勾时全是暗的');
+ok(r1final.textContent.includes('共 3 章，已完成 0 章'), '文字说明：' + (r1final.textContent.match(/共 \d+ 章[^%]*%/) || [''])[0]);
+ok(r1final.textContent.includes('章节清单（0 / 3）'), '章节清单默认收起但有计数');
+
+console.log('── 今日完成情况也能挂到资源上（不只是大任务）──');
+tabs[3].fire('click'); await tick();          // daily
+const rchip = byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('线性代数应该这样学'));
+ok(!!rchip, '资源也出现在选择器里');
+rchip.fire('click'); await tick();
+ok(byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('线性代数应该这样学')).className.includes('on'),
+  '点资源能选中它');
+ok(!byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).className.includes('on'),
+  '选资源的同时，大任务那个自动取消（互斥，不会同时挂两边）');
+const chChips = byCls($('done-picker'), 'chip').filter((c) => /^第 \d+ 章$/.test(c.textContent.replace(/[☐☑✅]/g, '').trim()));
+ok(chChips.length === 3, '选完资源会摊开它的 3 章，实际 ' + chChips.length);
+ok(chChips[0].className.includes('on'), '默认落在第 1 章 —— 顺着往下读的人不用每次自己点');
+ok(byCls($('done-picker'), 'chips-group').length === 3, '三组：大任务 / 学习资源 / 第几章');
+ok($('done-text-wrap').hidden === true, '挂资源时藏掉「完成的事」输入框 —— 这一章本来就有名字，不用另写');
+ok($('done-btn').textContent === '勾选这一章', '按钮改口径：' + $('done-btn').textContent);
+
+const nBeforeRes = DB.subtasks.length;
+const ch1row = DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 1);
+ok(!ch1row.done, '第 1 章还没勾');
+$('done-btn').fire('click'); await tick(); await tick();
+ok(DB.subtasks.length === nBeforeRes, '勾章节**不新增行**（书就那么几章，不该越读越长），实际多了 ' +
+  (DB.subtasks.length - nBeforeRes));
+ok(ch1row.done === true, '勾的是已有的第 1 章那一行');
+ok(typeof ch1row.done_at === 'string', '并带上了完成时间（月行程表要用）');
+ok(ch1row.task_id == null && ch1row.resource_id === 'r1', '仍然只挂在资源上，两个父没同时填');
+
+/* 再勾一次同一章：不该重复写时间戳 */
+const at1 = ch1row.done_at;
+$('done-btn').fire('click'); await tick(); await tick();
+ok(ch1row.done_at === at1, '同一章重复勾不会刷新时间戳');
+ok($('toast').textContent.includes('已经勾过了'), '并且明说已经勾过：' + $('toast').textContent);
+
+console.log('── 同步：资源的章节进度条 / 列表 / 动态流 ──');
+tabs[4].fire('click'); await tick();          // res
+const r1done = findAll($('res-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('线性代数应该这样学'));
+ok(findAll(r1done, (n) => hasCls(n, 'sq')).filter((x) => hasCls(x, 'on')).length === 1,
+  '资源进度条亮了 1 段');
+ok(findAll(r1done, (n) => hasCls(n, 'sq')).length === 3,
+  '分段数不变（亮的是颜色，不是长度）：' + findAll(r1done, (n) => hasCls(n, 'sq')).length);
+ok(r1done.textContent.includes('共 3 章，已完成 1 章'), '文字跟着变：' +
+  (r1done.textContent.match(/共 \d+ 章，已完成 \d+ 章/) || [''])[0]);
+ok(r1done.textContent.includes('章节清单（1 / 3）'), '清单计数跟着变');
+
+tabs[3].fire('click'); await tick();
+ok($('done-cols').textContent.includes('资源 · 线性代数应该这样学'),
+  '列表里标明它来自资源而不是大任务');
+ok($('done-cols').textContent.includes('第 1 章'), '列的是那一章');
+tabs[0].fire('click'); await tick();          // home
+ok($('feed').textContent.includes('完成章节'), '动态流用「完成章节」而不是「完成小任务」');
+ok($('feed').textContent.includes('线性代数应该这样学'), '并标出是哪本书');
+
+console.log('── 降级：还没跑 setup-4-chapters.sql ──');
+/* 没跑 SQL 时最真实的症状：资源根本分不了章 → 资源模式只能提示去分章，按钮点不动，
+   而不是让她点一下才发现写不进去。 */
+const keepCh = DB.subtasks.filter((x) => x.resource_id === 'r1');
+for (let i = DB.subtasks.length - 1; i >= 0; i--) if (DB.subtasks[i].resource_id === 'r1') DB.subtasks.splice(i, 1);
+/* 直接改 DB 之后必须走一次 refresh —— 界面读的是 app 自己那份 S.subtasks，
+   不刷新的话它还在画旧数据，测出来的是「界面陈旧」不是「降级路径」 */
+$('btn-refresh').fire('click'); await tick();
+failNext = 'column "resource_id" of relation "subtasks" does not exist';
+tabs[4].fire('click'); await tick();
+const r1noch = findAll($('res-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('线性代数应该这样学'));
+btns(r1noch, '＋ 分章')[0].fire('click'); await tick(); await tick();
+ok($('toast').textContent.includes('setup-4-chapters.sql'),
+  '分章失败被翻译成「去跑哪个脚本」，而不是把 Postgres 原文甩给她：' + $('toast').textContent);
+
+tabs[3].fire('click'); await tick();
+const rchip2 = byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('线性代数应该这样学'));
+rchip2.fire('click'); await tick();
+ok($('done-btn').disabled === true, '没分章的资源：按钮禁用，不会点了才发现没用');
+ok($('done-btn').textContent === '这本书还没分章', '并直接告诉她卡在哪：' + $('done-btn').textContent);
+ok($('done-tip').textContent.includes('分章'), '顺手指路：' + $('done-tip').textContent);
+
+/* 恢复：把章节放回去，后面的用例还要用（别在这之后又清掉） */
+DB.subtasks.push(...keepCh);
+$('btn-refresh').fire('click'); await tick();
+
 console.log('── 回车提交 + 中文输入法选词不误触 ──');
 tabs[3].fire('click'); await tick();
+/* 回车那条只服务大任务模式（资源模式下输入框是藏起来的，靠的是点章）。
+   先切回去，否则测的是「资源模式下按回车」—— 那不是她会走的路径 */
+byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).fire('click');
+await tick();
+ok($('done-text-wrap').hidden === false, '切回大任务模式，输入框回来了');
 $('done-text').value = '第 10 讲也看完了';
 $('done-text').fire('keydown', { key: 'Enter', isComposing: false, preventDefault() {} });
 await tick(); await tick();
@@ -485,19 +620,34 @@ ok($('d-moods').children.length === 5, '心情 5 档按钮还在');
 ok(!!$('d-save') && !!$('d-diff') && !!$('d-note'), '困难/补充/保存都还在');
 ok($('daily-cols').textContent.includes('特征值那块卡住了'), '历史心情记录仍能列出');
 
-console.log('── 兜底：一个大任务都没有的时候 ──');
+console.log('── 兜底：没有任何可挂靠的东西的时候 ──');
 const keepTasks = DB.tasks.slice();
+const keepRes = DB.resources.slice();
+/* 只清大任务：资源还在，所以**不该**禁用按钮 —— 挂到资源上照样能记 */
 DB.tasks.length = 0;
+$('btn-refresh').fire('click'); await tick();
+tabs[3].fire('click'); await tick();
+ok($('done-btn').disabled === false, '大任务没了但资源还在 → 仍然能记（挂到资源上）');
+ok(!byCls($('done-picker'), 'chip').some((c) => c.textContent.includes('学完线性代数')),
+  '大任务那一组整个消失，不留空壳');
+/* 资源那一组 + 它下面的「第几章」= 2 组 */
+ok($('done-picker').textContent.startsWith('学习资源'),
+  '第一组就是学习资源：' + $('done-picker').textContent.slice(0, 20));
+
+/* 资源和任务都清空 → 这才是真的没处可挂 */
+DB.resources.length = 0;
 $('btn-refresh').fire('click'); await tick();
 tabs[3].fire('click'); await tick();
 ok($('done-picker').textContent.includes('还没有大任务'),
   '先说清楚要先去建大任务，而不是给一个点了没反应的按钮');
 ok($('done-btn').disabled === true, '按钮被禁用，不会点了才发现没用');
+
 DB.tasks.push(...keepTasks);
+DB.resources.push(...keepRes);
 $('btn-refresh').fire('click'); await tick();
 tabs[3].fire('click'); await tick();
 ok($('done-btn').disabled === false, '大任务回来之后按钮恢复可用');
-ok(findAll($('done-picker'), (n) => n.className.includes('chip')).length === 1, 'chip 回来了');
+ok(byCls($('done-picker'), 'chip').length === 5, 'chip 回来了');
 
 console.log('── 降级：库里还没加 done_at 列（她还没跑 setup-3-feed.sql）──');
 const s1row = DB.subtasks.find((x) => x.id === 's1');

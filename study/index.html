@@ -157,21 +157,21 @@
   <section class="pane" id="pane-daily" hidden>
     <div class="card">
       <h2>今天完成了什么</h2>
-      <p class="hint" style="margin-top:0">
+      <p class="hint" style="margin-top:0" id="done-lead">
         写一条、勾上它属于哪个大任务，就会在那个大任务下直接生成一条已完成的小任务 ——
         大任务的进度条和月行程表同步跟着变，不用另外再去勾一遍。
       </p>
-      <div class="field" style="margin-top:12px">
+      <div class="field" style="margin-top:12px" id="done-text-wrap">
         <label class="f" for="done-text">完成的事</label>
         <input type="text" id="done-text" placeholder="例如：看完《线性代数》第 5 讲">
       </div>
       <div class="field" style="margin-top:12px">
-        <label class="f">属于哪个大任务</label>
-        <div class="chips" id="done-picker"></div>
+        <label class="f" id="done-picker-label">属于哪个大任务</label>
+        <div id="done-picker"></div>
       </div>
       <div class="row tight" style="margin-top:14px">
         <button class="primary" id="done-btn">记下并同步到大任务</button>
-        <span class="hint" style="margin:0">写完按回车也行</span>
+        <span class="hint" style="margin:0" id="done-tip">写完按回车也行</span>
       </div>
       <p class="hint" id="done-warn" hidden></p>
     </div>
@@ -233,6 +233,8 @@
             <option value="doing">进行中</option>
             <option value="done">已完成</option>
           </select></div>
+        <div style="max-width:110px"><label class="f" for="r-chapters">共几章</label>
+          <input type="number" id="r-chapters" min="0" max="200" step="1" placeholder="可留空"></div>
         <button class="primary" id="r-add">添加</button>
       </div>
     </div>

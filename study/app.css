@@ -339,6 +339,10 @@ details[open] summary{margin-bottom:11px}
   color:var(--text-secondary);cursor:pointer}
 .chip:hover{background:var(--chip)}
 .chip.on{background:var(--chip);border-color:var(--series-1);color:var(--text-primary)}
+/* 已经勾过的章节：压暗、划掉，一眼看出剩哪些没读 */
+.chip.done{opacity:.72}
+/* 划掉 + 用 secondary 而不是 muted：muted 在浅色底上只有 3.50:1，不到 AA */
+.chip.done .ct{text-decoration:line-through;color:var(--text-secondary)}
 .chip .ck{flex:0 0 auto;font-size:13px;line-height:1;color:var(--muted)}
 .chip.on .ck{color:var(--series-1)}
 .chip .ct{min-width:0;max-width:26ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -346,6 +350,31 @@ details[open] summary{margin-bottom:11px}
    和标签的区别靠字号（11px vs 12.5px）体现，不靠颜色深浅 */
 .chip .cn{flex:0 0 auto;font-size:11px;font-weight:500;color:var(--text-secondary);
   font-variant-numeric:tabular-nums}
+
+/* 两组 chip（大任务 / 学习资源）：组名用 11px 小字压在左上，
+   和 chip 里的计数同级，不抢主体 */
+.chips-group{display:flex;gap:9px;align-items:flex-start;margin-top:8px}
+.chips-group:first-child{margin-top:0}
+.cg-label{flex:0 0 62px;font-size:11px;font-weight:600;color:var(--text-secondary);
+  padding-top:8px;line-height:1.3}
+.chips-group .chips{flex:1;min-width:0}
+
+/* 资源下面的章节清单：平时收起，点开才占位置。
+   一屏可能有十几本书，全展开会把别的资源挤下去 */
+.subs-fold{margin-top:9px;border-top:1px solid var(--grid);padding-top:7px}
+.subs-fold > summary{font-size:11.5px;font-weight:600;color:var(--text-secondary);
+  cursor:pointer;list-style:none;padding:2px 0}
+.subs-fold > summary::-webkit-details-marker{display:none}
+.subs-fold > summary::before{content:"▸ ";display:inline-block}
+.subs-fold[open] > summary::before{content:"▾ "}
+.subs-fold .subs{margin-top:5px;border-top:0;padding-top:0}
+
+/* 「→ 资源 · 书名」这个来源标记，和来自大任务的区分开。
+   身份靠前面那颗小色点表示，**不**把文字染成 series-3 ——
+   实测 series-3 当文字在浅色 chip 底上只有 2.49:1，远低于 WCAG AA；
+   染色号又不合规矩：文字该穿文字色，颜色由旁边的色块承担。 */
+.pill.res::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
+  background:var(--series-3);margin-right:5px;vertical-align:1px}
 
 /* 折叠区（心情与困难退到页签底部） */
 .fold{margin-bottom:16px}
