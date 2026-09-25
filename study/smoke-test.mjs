@@ -432,71 +432,97 @@ tabs[3].fire('click'); await tick();          // daily
 const html = fs.readFileSync(path.join(DIR, 'index.html'), 'utf8');
 ok(/data-tab="daily"[^>]*>今日完成情况</.test(html), '页签改名为「今日完成情况」');
 ok(!/data-tab="daily"[^>]*>每日困难与心情</.test(html), '旧名字没有残留');
-ok(/id="done-picker"/.test(html) && /id="done-text"/.test(html) && /id="done-btn"/.test(html),
-  'index.html 里三个新元素都在');
+ok(/id="done-picker"/.test(html) && /id="done-btn"/.test(html), 'index.html 里两个元素都在');
 ok(/id="done-warn"/.test(html), '缺 done_at 列时的提示位也在');
+/* 自由文本框去掉了。以前大任务是「写一条 → 凭空新建一条已完成的小任务」，
+   会让大任务越记越长、分母越来越大，还替她宣布了「完成」—— 她明确说不要。 */
+ok(!/id="done-text"/.test(html), 'index.html 里不再有自由文本框');
 const chips = byCls($('done-picker'), 'chip');
-/* 两组：大任务 + 学习资源。我 1 个大任务 + 4 个资源，对方的一个都不能出现 */
-ok(chips.length === 5, '只列我的：1 个大任务 + 4 个资源，实际 ' + chips.length);
+/* 三组：大任务 + 学习资源 + 那个大任务的「哪一步」。
+   我 1 个大任务 + 4 个资源 + 它的 3 步 = 8；对方的一个都不能出现 */
+ok(chips.length === 8, '只列我的：1 大任务 + 4 资源 + 3 步，实际 ' + chips.length);
 ok(chips.every((c) => !c.textContent.includes('考研政治')), '对方的资源不该出现');
 const tchip = chips.find((c) => c.textContent.includes('学完线性代数'));
 ok(!!tchip, '大任务 chip 在');
 ok(tchip.className.includes('on'), '默认选中一个 —— 不能让人先点一下才能记');
-ok(tchip.textContent.includes('3/3'), 'chip 上带当前进度，勾之前就知道要挂到哪');
+ok(tchip.textContent.includes('3/3'), 'chip 上带当前进度，记之前就知道要挂到哪');
 tchip.fire('click'); await tick();
 ok(byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).className.includes('on'),
   '再点一下仍是选中态（不会点没了）');
-ok(byCls($('done-picker'), 'chips-group').length === 2, '分成「大任务」「学习资源」两组');
+ok(byCls($('done-picker'), 'chips-group').length === 3, '分成「大任务」「学习资源」「哪一步」三组');
 ok($('done-picker').textContent.includes('学习资源'), '资源那一组有组名');
+const stepGroup = byCls($('done-picker'), 'chips-group')[2];
+ok(stepGroup.textContent.includes('哪一步'), '第三组叫「哪一步」');
+ok(stepGroup.textContent.includes('习题课'), '「哪一步」列出这个大任务的三个阶段');
+ok(byCls(stepGroup, 'chip').length === 3, '三步都列出来了，实际 ' + byCls(stepGroup, 'chip').length);
 
-$('done-text').value = '   ';
+/* 三个阶段此刻都已完成 —— 不该允许再记推进：那会把「已经完成的那天」改成今天 */
 $('done-btn').fire('click'); await tick();
-ok($('toast').textContent.includes('先写点东西'), '空输入被拒：' + $('toast').textContent);
+ok($('toast').textContent.includes('已经完成了'), '已完成的那一步不给再记推进：' + $('toast').textContent);
+
+/* ══ 核心：把 s3 退回未完成，记一笔推进。测完原样还回去，后面的断言不受影响 ══ */
+const s3row = DB.subtasks.find((x) => x.id === 's3');
+const s3keep = { done: s3row.done, done_at: s3row.done_at };
+s3row.done = false; s3row.done_at = null;
+$('btn-refresh').fire('click'); await tick();
+
+const s3chip = byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('习题课'));
+ok(!!s3chip, '「习题课」这一步在「哪一步」里');
+ok(!hasCls(s3chip, 'done'), '退回未完成后，它不再是 ✅');
+s3chip.fire('click'); await tick();
+ok(hasCls(byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('习题课')), 'on'),
+  '点一下就选中这一步');
 
 const nBefore = DB.subtasks.length;
-$('done-text').value = '看完第 9 讲';
-$('done-btn').fire('click'); await tick(); await tick();
-ok(DB.subtasks.length === nBefore + 1, '库里多了一条小任务');
-const added = DB.subtasks[DB.subtasks.length - 1];
-ok(added.task_id === 't1', '挂在我勾中的那个大任务下');
-ok(added.owner === ME, 'owner 是我，不是别人');
-ok(added.title === '看完第 9 讲', '内容原样写进去');
-ok(added.done === true, '直接就是已完成状态，不用再去勾一遍');
-ok(typeof added.done_at === 'string' && Math.abs(Date.now() - new Date(added.done_at).getTime()) < 60000,
-  'done_at 是刚刚，不是瞎写的');
-ok(added.seq === 4, '排在已有小任务后面（seq 4），实际 ' + added.seq);
-ok($('done-text').value === '', '记完自动清空，接着记下一条不用手动删');
+ok($('done-btn').textContent.includes('只记一笔'), '按钮说的是「只记一笔」，不是「完成」：' + $('done-btn').textContent);
+ok($('done-tip').textContent.includes('进度条不动'), '旁边写清楚了进度条不会动');
 
-console.log('── 同步：大任务 / 总览 / 月行程表 / 动态流 都跟着变 ──');
+$('done-btn').fire('click'); await tick(); await tick();
+
+ok(DB.subtasks.length === nBefore, '没有偷偷新建小任务（旧行为会），' + nBefore + ' → ' + DB.subtasks.length);
+ok(s3row.done === false, 'done 仍是 false —— 完成状态一点没动');
+ok(typeof s3row.done_at === 'string' &&
+   Math.abs(Date.now() - new Date(s3row.done_at).getTime()) < 60000,
+  '只是盖上今天的 done_at，当作「今天动过」的戳');
+ok($('toast').textContent.includes('还没算完成'), '提示里明说它还不算完成：' + $('toast').textContent);
+
+console.log('── 记推进不该惊动「完成」口径：进度 / 总览 / 月行程表 / 动态流 ──');
 tabs[2].fire('click'); await tick();          // tasks
 const segBar1 = findAll($('tasks-cols'), (n) => /\bseg\b/.test(n.className))[0];
-ok(findAll(segBar1, (n) => /\bsq\b/.test(n.className)).length === 4, '大任务从 3 段变 4 段');
-ok(findAll(segBar1, (n) => /\bsq\b/.test(n.className)).every((x) => /\bon\b/.test(x.className)),
-  '4 段全亮');
-ok($('ov-sub').textContent.includes('已完成 4 个'), '总览统计跟着变：' + $('ov-sub').textContent);
-ok(findAll($('ov-list'), (n) => n.className.includes('ov-row'))[0].textContent.includes('4 / 4'),
-  '总览里我的变成 4 / 4');
+const segs1 = findAll(segBar1, (n) => /\bsq\b/.test(n.className));
+ok(segs1.length === 3, '还是 3 段 —— 没凭空长出一段来（旧行为会长到 4 段），实际 ' + segs1.length);
+ok(segs1.filter((x) => /\bon\b/.test(x.className)).length === 2, '只有 2 段亮 —— 推进的那一步不算完成');
+ok($('ov-sub').textContent.includes('已完成 2 个'), '总览统计没被推进带上去：' + $('ov-sub').textContent);
+ok(findAll($('ov-list'), (n) => n.className.includes('ov-row'))[0].textContent.includes('2 / 3'),
+  '总览里我的退回 2 / 3，不是 3 / 3');
 
 tabs[1].fire('click'); await tick();          // goals → 月行程表
 if (inThisMonth) {
-  ok(dcOf(now.getDate()) === '3', '月行程表今天从 2 件变 3 件，实际「' + dcOf(now.getDate()) + '」');
+  /* 今天本来只有 g1 一个完成（s3 刚退回未完成）。dayStats 只认 done，
+     推进盖的 done_at 不该点亮格子 —— 点亮了就说明口径串了。 */
+  ok(dcOf(now.getDate()) === '1', '月行程表只算真完成的，推进不点亮格子，实际「' + dcOf(now.getDate()) + '」');
 }
 tabs[0].fire('click'); await tick();          // home
-ok($('feed').textContent.includes('看完第 9 讲'), '主页动态流出现这条');
+ok(!$('feed').textContent.includes('习题课'), '动态流没把推进误报成完成');
 
-console.log('── 今日完成情况列表：两人分栏、可撤销 ──');
+console.log('── 今日完成情况列表：已完成 / 今天动过 分开标，可撤销 ──');
 tabs[3].fire('click'); await tick();
 ok($('done-sub').textContent.includes('今天'), '计数行：' + $('done-sub').textContent);
-ok($('done-cols').textContent.includes('看完第 9 讲'), '列表里能看到刚记的这条');
+ok($('done-cols').textContent.includes('习题课'), '列表里能看到刚记的这一步');
+ok($('done-cols').textContent.includes('今天动过'), '标成「今天动过」，不跟「已完成」混');
 ok($('done-cols').textContent.includes('学完线性代数'), '并标出它属于哪个大任务');
 ok(findAll($('done-cols'), (n) => n.className.includes('who')).length === 2, '两人分栏');
-const undoBtn = btns($('done-cols'), '撤销完成').pop();
-ok(!!undoBtn, '我这边有「撤销完成」');
+const undoBtn = btns($('done-cols'), '撤销推进')[0];
+ok(!!undoBtn, '推进记录给的是「撤销推进」，不是「撤销完成」');
 undoBtn.fire('click'); await tick(); await tick();
-ok(added.done === false, '撤销后回到未完成状态');
-ok(added.done_at === null, 'done_at 一并清掉，不会留在日历上');
+ok(s3row.done_at === null, '撤销后 done_at 清掉，这条推进记录消失');
+ok(s3row.done === false, '撤销推进不会顺手把完成状态改掉');
+
+/* 测完了，把 s3 原样还回去，后面「完成」那套断言照旧 */
+Object.assign(s3row, s3keep);
+$('btn-refresh').fire('click'); await tick();
 tabs[2].fire('click'); await tick();
-ok($('ov-sub').textContent.includes('已完成 3 个'), '总览跟着退回去：' + $('ov-sub').textContent);
+ok($('ov-sub').textContent.includes('已完成 3 个'), '还回去之后总览回到 3 个：' + $('ov-sub').textContent);
 
 console.log('── 学习资源：拆成章节 + 一章一章勾 ──');
 ok(/id="r-chapters"/.test(html), 'index.html 里加了「共几章」输入框');
@@ -547,8 +573,8 @@ const chChips = byCls($('done-picker'), 'chip').filter((c) => /^第 \d+ 章$/.te
 ok(chChips.length === 3, '选完资源会摊开它的 3 章，实际 ' + chChips.length);
 ok(chChips[0].className.includes('on'), '默认落在第 1 章 —— 顺着往下读的人不用每次自己点');
 ok(byCls($('done-picker'), 'chips-group').length === 3, '三组：大任务 / 学习资源 / 第几章');
-ok($('done-text-wrap').hidden === true, '挂资源时藏掉「完成的事」输入框 —— 这一章本来就有名字，不用另写');
-ok($('done-btn').textContent === '勾选这一章', '按钮改口径：' + $('done-btn').textContent);
+ok($('done-btn').textContent.includes('算完成'),
+  '资源模式按钮把口径写明：勾这一章就算完成 —— ' + $('done-btn').textContent);
 
 const nBeforeRes = DB.subtasks.length;
 const ch1row = DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 1);
@@ -613,27 +639,16 @@ ok($('done-tip').textContent.includes('分章'), '顺手指路：' + $('done-tip
 DB.subtasks.push(...keepCh);
 $('btn-refresh').fire('click'); await tick();
 
-console.log('── 回车提交 + 中文输入法选词不误触 ──');
+console.log('── 自由文本框整块去掉了（回车 / 输入法那套跟着删）──');
 tabs[3].fire('click'); await tick();
-/* 回车那条只服务大任务模式（资源模式下输入框是藏起来的，靠的是点章）。
-   先切回去，否则测的是「资源模式下按回车」—— 那不是她会走的路径 */
+/* 以前是「写一条 → 回车提交」，还专门挡过中文输入法选词时的回车。
+   现在两种模式都是「选父项 → 选其中一条」，没有文本框，那套逻辑一起删干净了。 */
 byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).fire('click');
 await tick();
-ok($('done-text-wrap').hidden === false, '切回大任务模式，输入框回来了');
-$('done-text').value = '第 10 讲也看完了';
-$('done-text').fire('keydown', { key: 'Enter', isComposing: false, preventDefault() {} });
-await tick(); await tick();
-ok(DB.subtasks.some((x) => x.title === '第 10 讲也看完了' && x.done), '回车也能提交');
-const nCompose = DB.subtasks.length;
-$('done-text').value = '输入法还没选完词';
-$('done-text').fire('keydown', { key: 'Enter', isComposing: true, preventDefault() {} });
-await tick();
-ok(DB.subtasks.length === nCompose, '中文输入法选词时的回车不会误提交（否则打中文必炸）');
-$('done-text').value = 'keyCode 229 兜底';
-$('done-text').fire('keydown', { key: 'Enter', isComposing: false, keyCode: 229, preventDefault() {} });
-await tick();
-ok(DB.subtasks.length === nCompose, 'isComposing 失灵时靠 keyCode 229 也挡得住');
-$('done-text').value = '';
+ok($('done-btn').textContent.includes('只记一笔'), '切回大任务模式，按钮仍是「只记一笔」：' + $('done-btn').textContent);
+ok($('done-picker').textContent.includes('哪一步'), '「哪一步」那一组在');
+ok($('done-tip').textContent.includes('大任务拆解'),
+  '提示明确告诉她真完成要去哪里勾：' + $('done-tip').textContent);
 
 console.log('── 心情与困难：没被删掉，退到折叠区 ──');
 ok($('d-moods').children.length === 5, '心情 5 档按钮还在');
@@ -667,7 +682,7 @@ DB.resources.push(...keepRes);
 $('btn-refresh').fire('click'); await tick();
 tabs[3].fire('click'); await tick();
 ok($('done-btn').disabled === false, '大任务回来之后按钮恢复可用');
-ok(byCls($('done-picker'), 'chip').length === 5, 'chip 回来了');
+ok(byCls($('done-picker'), 'chip').length === 8, 'chip 回来了（1 大任务 + 4 资源 + 3 步）');
 
 console.log('── 降级：库里还没加 done_at 列（她还没跑 setup-3-feed.sql）──');
 const s1row = DB.subtasks.find((x) => x.id === 's1');

@@ -158,20 +158,15 @@
     <div class="card">
       <h2>今天完成了什么</h2>
       <p class="hint" style="margin-top:0" id="done-lead">
-        写一条、勾上它属于哪个大任务，就会在那个大任务下直接生成一条已完成的小任务 ——
-        大任务的进度条和月行程表同步跟着变，不用另外再去勾一遍。
+        选中一个大任务，再选中今天推进的那一步 —— 这里只记一笔，不会替你把它标成完成。
       </p>
-      <div class="field" style="margin-top:12px" id="done-text-wrap">
-        <label class="f" for="done-text">完成的事</label>
-        <input type="text" id="done-text" placeholder="例如：看完《线性代数》第 5 讲">
-      </div>
       <div class="field" style="margin-top:12px">
         <label class="f" id="done-picker-label">属于哪个大任务</label>
         <div id="done-picker"></div>
       </div>
       <div class="row tight" style="margin-top:14px">
-        <button class="primary" id="done-btn">记下并同步到大任务</button>
-        <span class="hint" style="margin:0" id="done-tip">写完按回车也行</span>
+        <button class="primary" id="done-btn">只记一笔：今天推进了这一步</button>
+        <span class="hint" style="margin:0" id="done-tip">只记录今天动过它，进度条不动</span>
       </div>
       <p class="hint" id="done-warn" hidden></p>
     </div>

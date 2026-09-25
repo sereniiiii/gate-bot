@@ -43,7 +43,7 @@
     month: '',            // 月行程表显示哪个月 'YYYY-MM'，空 = 本月
     doneKind: 'task',     // 「今日完成情况」挂到哪：'task' 大任务 | 'res' 学习资源
     doneRef: null,        // 挂到哪一条（大任务 id 或资源 id）
-    doneChapter: null,    // 挂资源时，勾的是那一章的 subtask id
+    doneChapter: null,    // 选中的那个 subtask id：挂资源 = 哪一章，挂大任务 = 哪一步
     resScope: 'all',      // all | me | other
     feedKind: 'all',      // all | done | log | res
     noDoneAt: false,      // 库里还没加 done_at 列时置位（setup-3-feed.sql 跑之前）
@@ -277,21 +277,6 @@
     return true;
   }
 
-  /* 「今日完成情况」里记一件完成的事 = 直接在那个大任务下建一条已完成的小任务。
-     这么做的好处在于是同一份数据：大任务的进度条、月行程表、主页动态流
-     全都自动跟着变，不需要各自维护一套。
-     同 setDone，库里还没有 done_at 列时自动退化成不写时间戳。 */
-  function insertDoneSub(row) {
-    const full = Object.assign({}, row, { done: true, done_at: new Date().toISOString() });
-    return sb.from('subtasks').insert(full).then((r) => {
-      if (r.error && /done_at/i.test(r.error.message)) {
-        S.noDoneAt = true;
-        return sb.from('subtasks').insert(Object.assign({}, row, { done: true }));
-      }
-      return r;
-    });
-  }
-
   /* 库还没跑 setup-4-chapters.sql 时，提到 resource_id 的报错会被原样吐出来，
      对方看不懂。翻译成一句能直接照做的中文。 */
   function schemaWarn(error) {
@@ -324,6 +309,22 @@
         S.noDoneAt = true;
         const slim = Object.assign({ done: done }, patch || {});
         return sb.from(table).update(slim).eq('id', id);
+      }
+      return r;
+    });
+  }
+
+  /* 「今天推进了这一步」—— 只盖 done_at，**不动 done**。
+     为什么复用 done_at：这一列的语义本来就是「这一天动过它」。
+     done=false 且 done_at 有值 = 推进了但没完成；等她自己去「大任务拆解」勾上，
+     setDone(true) 会把 done_at 覆盖成真实完成时刻，这条记录就自动从
+     「今天动过」变成「已完成」。不新增列、不新增表，她不用再跑 SQL。
+     下游口径都只看 done（dayStats / buildFeed / 进度条），所以不会被误读成完成。 */
+  function stampStep(id) {
+    return sb.from('subtasks').update({ done_at: new Date().toISOString() }).eq('id', id).then((r) => {
+      if (r.error && /done_at/i.test(r.error.message)) {
+        S.noDoneAt = true;
+        return { error: { message: '库里还没有 done_at 列，去 Supabase 后台跑一次 study/setup-3-feed.sql 再回来。' } };
       }
       return r;
     });
@@ -811,7 +812,6 @@
     const box = $('done-picker');
     const btn = $('done-btn');
     const lead = $('done-lead');
-    const twrap = $('done-text-wrap');
     const plabel = $('done-picker-label');
     const tip = $('done-tip');
     clear(box);
@@ -858,16 +858,20 @@
     });
 
     const isRes = S.doneKind === 'res';
-    const parent = isRes ? S.resources.find((r) => r.id === S.doneRef) : null;
-    const chs = parent ? subsOfRes(parent.id) : [];
+    const parent = isRes ? S.resources.find((r) => r.id === S.doneRef)
+                         : S.tasks.find((t) => t.id === S.doneRef);
+    const chs = parent ? (isRes ? subsOfRes(parent.id) : subsOfTask(parent.id)) : [];
 
-    if (isRes && chs.length) {
-      /* 默认落在第一章还没勾的 —— 顺着往下读的人不用每次自己点 */
+    /* 第三组。两种模式共用 doneChapter：
+         挂资源 = 勾哪一章（勾了就**算完成**）
+         挂大任务 = 今天推进了哪一步（**只记录，不算完成**）
+       切模式时 id 对不上，下面这句兜底会把它退回第一条没完成的。 */
+    if (chs.length) {
       if (!chs.some((x) => x.id === S.doneChapter)) {
         S.doneChapter = (chs.find((x) => !x.done) || chs[0]).id;
       }
       box.appendChild(h('div', { class: 'chips-group' },
-        h('span', { class: 'cg-label', text: '第几章' }),
+        h('span', { class: 'cg-label', text: isRes ? '第几章' : '哪一步' }),
         h('div', { class: 'chips' },
           chs.map((x) => {
             const on = S.doneChapter === x.id;
@@ -875,7 +879,7 @@
               type: 'button',
               class: 'chip' + (on ? ' on' : '') + (x.done ? ' done' : ''),
               'aria-pressed': on ? 'true' : 'false',
-              title: x.done ? '这一章已经勾过了' : '',
+              title: x.done ? (isRes ? '这一章已经勾过了' : '这一步已经完成了') : '',
               onclick: () => { S.doneChapter = x.id; renderDoneForm(); },
             },
               h('span', { class: 'ck', text: x.done ? '✅' : (on ? '☑' : '☐') }),
@@ -886,8 +890,11 @@
       ));
     }
 
+    /* 这一页没有自由文本框了。以前大任务是「写一条 → 凭空新建一条已完成的小任务」，
+       会越记越长、分母越来越大，而且替她宣布了「完成」—— 她明确说不要。
+       现在两种模式都是「选一个父项、选其中一条」，小任务该在「大任务拆解」里拆、在那里勾。 */
+
     if (isRes) {
-      twrap.hidden = true;
       plabel.textContent = '属于哪本书 / 哪门课';
       if (!chs.length) {
         btn.disabled = true;
@@ -895,19 +902,24 @@
         tip.textContent = '先去「学习资源」里给它「＋ 分章」';
       } else {
         btn.disabled = false;
-        btn.textContent = '勾选这一章';
-        tip.textContent = '勾完，这本书的章节进度条立刻跟着变';
+        btn.textContent = '勾掉这一章（算完成）';
+        tip.textContent = '勾完，这本书的章节进度条和月行程表立刻跟着变';
       }
       lead.textContent = '选中一本书 / 一门课，再勾掉这次读完的那一章 —— ' +
-        '这本书的进度条、月行程表会同步更新，不用再去资源页点一遍。';
+        '它就算真的完成了，这本书的进度条、月行程表会同步更新。';
     } else {
-      twrap.hidden = false;
-      btn.disabled = false;
-      btn.textContent = '记下并同步到大任务';
-      tip.textContent = '写完按回车也行';
       plabel.textContent = '属于哪个大任务';
-      lead.textContent = '写一条、勾上它属于哪个大任务，就会在那个大任务下直接生成一条已完成的小任务 —— ' +
-        '大任务的进度条和月行程表同步跟着变，不用另外再去勾一遍。';
+      if (!chs.length) {
+        btn.disabled = true;
+        btn.textContent = '这个大任务还没拆步';
+        tip.textContent = '先去「大任务拆解」把它拆成几步，再回来记推进';
+      } else {
+        btn.disabled = false;
+        btn.textContent = '只记一笔：今天推进了这一步';
+        tip.textContent = '只记录今天动过它，进度条不动 —— 真做完了去「大任务拆解」自己勾';
+      }
+      lead.textContent = '选中一个大任务，再选中今天推进的那一步 —— 这里只记一笔，' +
+        '不会替你把它标成完成。真做完了，去「大任务拆解」勾上它，那时才算完成。';
     }
   }
 
@@ -915,28 +927,42 @@
      不新开一张表：完成的事本来就是大任务的小任务，复用同一份数据才不会两处对不上。 */
   function renderDoneList() {
     const t = today();
-    const rows = S.subtasks.filter((x) => x.done && isoDate(x.done_at) === t);
+    /* 两类，都靠 done_at 认，不需要新表：
+         已完成   —— done 且 done_at 是今天
+         今天动过 —— done=false 但 done_at 是今天（上面「只记一笔」盖的戳）
+       她之后去「大任务拆解」把这一步勾上，setDone(true) 会用真实完成时刻覆盖 done_at，
+       这条记录就自动从「今天动过」变成「已完成」—— 一份数据两种读法，不会两处对不上。 */
+    const rows = S.subtasks
+      .filter((x) => x.done_at && isoDate(x.done_at) === t)
+      .map((x) => Object.assign({}, x, { __step: !x.done }))
+      .sort((a, b) => (a.__step === b.__step ? 0 : a.__step ? 1 : -1));   // 完成的排前面
     twoCols($('done-cols'), rows, (owner, list, mine) => {
-      if (!list.length) return emptyNote(mine ? '今天还没记。上面写一条。' : '对方今天还没记。');
+      if (!list.length) return emptyNote(mine ? '今天还没记。上面记一笔。' : '对方今天还没记。');
       const wrap = h('div');
       for (const x of list.slice(0, 60)) {
+        const step = x.__step;
         wrap.appendChild(
-          h('div', { class: 'item done' },
+          h('div', { class: 'item' + (step ? '' : ' done') },
             h('div', { class: 't' },
               h('span', { class: 'grow', text: x.title || '(未填写)' }),
-              h('span', { class: 'pill ok', text: '已完成' })
+              step ? h('span', { class: 'pill', text: '今天动过' })
+                   : h('span', { class: 'pill ok', text: '已完成' })
             ),
             h('div', { class: 'm' },
               h('span', { class: 'pill' + (parentIsRes(x) ? ' res' : ''), text: '→ ' + parentLabel(x) }),
               h('span', { text: relTime(x.done_at) })
             ),
             mine ? h('div', { class: 'acts' },
-              h('button', {
+              step ? h('button', {
+                class: 'tiny', text: '撤销推进',
+                title: '只抹掉今天这条推进记录，这一步在「大任务拆解」里还是待办',
+                onclick: () => commit(setDone('subtasks', x.id, false), '已撤销这条推进记录，它还是待办'),
+              }) : h('button', {
                 class: 'tiny', text: '撤销完成',
                 title: '改回未完成，它会回到大任务里继续待办',
                 onclick: () => commit(setDone('subtasks', x.id, false), '已撤销，它回到大任务里待办了'),
               }),
-              h('button', {
+              step ? null : h('button', {
                 class: 'tiny danger', text: '删除',
                 title: '从大任务里彻底删掉这一条',
                 onclick: () => removeRow('subtasks', x.id, '「' + (x.title || '未填写') + '」这一条'),
@@ -949,11 +975,13 @@
     }, { everyone: true });
   }
 
-  /* 新增。两种模式：
-       大任务 —— 新建一条已完成的小任务（那个大任务本来就没什么固定条目）
-       资源   —— 把选中的那一章勾掉（书的章节数是固定的，不该越读越多） */
+  /* 记一笔。两种模式的语义**故意不一样**，是她明确要求的：
+       大任务 —— 只给选中的那一步盖今天的时间戳，**不改完成状态**。
+                 真做完了要她自己去「大任务拆解」勾（原话：
+                 「不要勾选后就默认大任务的某个阶段完成了」）。
+                 以前这里是凭空新建一条已完成的小任务，会让大任务越记越长、分母越来越大。
+       资源   —— 把选中的那一章勾掉，那就算完成（书就那么几章，不该越读越多）。 */
   async function addDone() {
-    const inp = $('done-text');
     const btn = $('done-btn');
 
     if (S.doneKind === 'res') {
@@ -974,24 +1002,23 @@
       return;
     }
 
-    const v = inp.value.trim();
-    if (!v) { toast('先写点东西：今天完成了什么', true); inp.focus(); return; }
-
     const task = S.tasks.find((x) => x.id === S.doneRef && isMine(x));
     if (!task) { toast('先在上面勾一个它属于哪个大任务', true); return; }
 
-    const subs = subsOfTask(task.id);
-    const seq = subs.length ? Math.max(...subs.map((x) => x.seq || 0)) + 1 : 1;
+    const step = subsOfTask(task.id).find((x) => x.id === S.doneChapter);
+    if (!step) { toast('再选今天推进的那一步', true); return; }
+    if (step.done) {
+      toast('「' + (step.title || '这一步') + '」已经完成了，不用再记推进', true);
+      return;
+    }
 
     btn.disabled = true;
-    const { error } = await insertDoneSub({
-      task_id: task.id, owner: S.me.id, seq: seq, title: v, detail: '',
-    });
+    const { error } = await stampStep(step.id);
     btn.disabled = false;
-    if (error) { toast('没记上：' + schemaWarn(error), true); return; }
+    if (error) { toast('没记上：' + error.message, true); return; }
 
-    inp.value = '';
-    toast('记下了，已同步到「' + (task.title || '无标题') + '」');
+    toast('记下了：今天推进了「' + (step.title || '这一步') + '」· ' + (task.title || '无标题') +
+          '。它还没算完成 —— 真做完了去「大任务拆解」勾上它。');
     await refresh();
   }
 
@@ -1607,16 +1634,8 @@
       await refresh();
     });
 
-    /* 今日完成情况：点按钮记一条，回车也记 —— 记流水账时不该被迫去够鼠标 */
+    /* 今日完成情况：只有一个按钮了（没有文本框，回车提交那套跟着去掉） */
     $('done-btn').addEventListener('click', addDone);
-    /* isComposing 之外再挡一道 keyCode 229 —— 中文输入法选词时的回车
-       在部分浏览器上 isComposing 是 false，不挡的话打中文必被误提交 */
-    $('done-text').addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter') return;
-      if (e.isComposing || e.keyCode === 229) return;
-      e.preventDefault();
-      addDone();
-    });
 
     $('d-date').addEventListener('change', prefillDay);
     $('d-save').addEventListener('click', async () => {
