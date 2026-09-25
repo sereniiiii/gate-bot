@@ -98,6 +98,7 @@
     const slot = (k) => (m[k] || (m[k] = { subs: [], goals: [], log: null }));
     for (const x of S.subtasks) {
       if (!x.done) continue;
+      if (isTwinEcho(x)) continue;        // 绑着的两条是同一件事，只算一次
       const k = isoDate(x.done_at);
       if (k) slot(k).subs.push(x);
     }
@@ -192,12 +193,83 @@
     return p ? (p.title || p.name || '(无标题)') : null;
   };
   const parentIsRes = (x) => !x.task_id && !!x.resource_id;
+
+  /* ── 「同一件事的两个说法」────────────────────────────────
+     两条 subtask 互相指着 = 一本书的一章 就是 大任务里的那一步。
+     在任意一边勾完成，另一边跟着变（同步写在 setDone 里，一处覆盖所有入口）。
+     绑是**双向**的，所以谁先被勾都一样。
+     注意：库里没有 link_id 这一列时，所有行都读不到它 → 就是「没绑过」，
+     页面照常（loadAll 用的是 select('*')，缺列不会报错、不会白屏）。 */
+  const linkedTo = (x) => (x && x.link_id ? S.subtasks.find((s) => s.id === x.link_id) || null : null);
+  /* 绑着的两条在库里是两行，但**是同一件事** —— 日历和动态流里只算一次，
+     否则绑一对就把那天的件数灌一倍。id 小的那条算数（uuid 比大小任意但稳定）。 */
+  const isTwinEcho = (x) => {
+    const t = linkedTo(x);
+    return !!(t && t.done && x.done && String(x.id) > String(t.id));
+  };
   /* 「属于哪儿」的人话说法，动态流和列表都用它 */
   const parentLabel = (x) => {
     const n = parentName(x);
     if (n === null) return parentIsRes(x) ? '资源已删除' : '大任务已删除';
     return (parentIsRes(x) ? '资源 · ' : '大任务 · ') + n;
   };
+
+  /* 能跟这一条绑成「同一件事」的候选：大任务的步骤 ↔ 资源的章节，一对一。
+     已经绑给别人的不再列出来 —— 否则会出现三条互指、勾一下动两条不相干的。
+     连不到任何东西时返回空数组，界面上那个入口就不出现。 */
+  function linkChoices(sub) {
+    const isCh = parentIsRes(sub);
+    const out = [];
+    const push = (pname, rows) => {
+      for (const r of rows) {
+        if (r.id === sub.id) continue;
+        if (r.link_id && r.link_id !== sub.id) continue;     // 名花有主
+        out.push({ id: r.id, label: pname + ' · ' + (r.title || '未填写') });
+      }
+    };
+    if (isCh) for (const t of S.tasks.filter(isMine)) push(t.title || '大任务', subsOfTask(t.id));
+    else      for (const r of S.resources.filter(isMine)) push(r.name || '资源', subsOfRes(r.id));
+    return out;
+  }
+
+  /* 绑 / 解绑。往新对家身上绑之前，先把两边各自旧的那条松开，免得留下单向指针。
+     绑完如果两边的完成状态不一样，**问一句**再决定要不要拉平 ——
+     她明确说过别替她宣布完成，所以这里绝不自己动手。 */
+  async function setLink(sub, targetId) {
+    const tgt = targetId ? S.subtasks.find((s) => s.id === targetId) : null;
+    if (targetId && !tgt) return { error: { message: '要绑的那一条已经不在了' } };
+    if (tgt && tgt.id === sub.id) return { error: { message: '不能和自己绑' } };
+
+    const old = linkedTo(sub);
+    const tOld = tgt ? linkedTo(tgt) : null;
+    const jobs = [];
+    if (old && (!tgt || old.id !== tgt.id)) jobs.push(old);
+    if (tOld && tOld.id !== sub.id) jobs.push(tOld);
+
+    /* 先改内存再写库：下面那个 confirm 之后要调 setDone()，而 setDone 靠
+       linkedTo() 找对家 —— 内存不先更新的话它会往**旧**对家身上带。 */
+    sub.link_id = tgt ? tgt.id : null;
+    tgt && (tgt.link_id = sub.id);
+    for (const o of jobs) o.link_id = null;
+
+    const res = await Promise.all([
+      ...jobs.map((o) => sb.from('subtasks').update({ link_id: null }).eq('id', o.id)),
+      sb.from('subtasks').update({ link_id: sub.link_id }).eq('id', sub.id),
+      ...(tgt ? [sb.from('subtasks').update({ link_id: sub.id }).eq('id', tgt.id)] : []),
+    ]);
+    const bad = res.find((r) => r.error);
+    if (bad) return bad;
+
+    if (tgt && !!tgt.done !== !!sub.done) {
+      const a = (sub.title || '未填写') + (sub.done ? '（已完成）' : '（还没完成）');
+      const b = (tgt.title || '未填写') + (tgt.done ? '（已完成）' : '（还没完成）');
+      if (confirm('绑好了。但两边现在不一样：' + a + '、' + b + '。\n\n' +
+                  '要不要把两条都算完成？（不点确定就保持原样，以后勾哪边都会带着另一边）')) {
+        await setDone('subtasks', sub.done ? sub.id : tgt.id, true);
+      }
+    }
+    return { error: null };
+  }
 
   /* 头像：有图用图，没图就用自己的名字首字兜底（不是默认灰头像，两个人颜色可区分） */
   function avatarEl(id, cls) {
@@ -290,6 +362,9 @@
     if (/resource_id/i.test(m)) {
       return '库里还没有章节字段。去 Supabase 后台跑一次 study/setup-4-chapters.sql 再回来。';
     }
+    if (/link_id/i.test(m)) {
+      return '库里还没有「绑成同一件事」这一列。去 Supabase 后台跑一次 study/setup-5-link.sql 再回来。';
+    }
     return m;
   }
 
@@ -308,6 +383,8 @@
 
   /* 勾选完成时顺便写 done_at（主页动态流靠它排序）。
      旧库还没加这一列时自动退化成只写 done —— 按钮不会因此点不动。 */
+  /* 改完成状态。**所有入口都走这里**（大任务拆解/资源清单的勾选框、今天的列表、
+     今日完成情况的资源那一组），所以「绑了对家就跟着变」只需要写在这一处。 */
   function setDone(table, id, done, patch) {
     const full = Object.assign({ done: done, done_at: done ? new Date().toISOString() : null }, patch || {});
     return sb.from(table).update(full).eq('id', id).then((r) => {
@@ -317,6 +394,14 @@
         return sb.from(table).update(slim).eq('id', id);
       }
       return r;
+    }).then((r) => {
+      if (r.error || table !== 'subtasks') return r;
+      const twin = linkedTo(S.subtasks.find((s) => s.id === id));
+      if (!twin) return r;
+      /* 对家跟着一起变，done_at 用**同一个时刻** —— 两条是同一件事，
+         时间戳一样才不会被算成两天。对家写失败不推翻这次的结果（主那条已经成了），
+         刷新之后两边不一致她一眼能看见，再勾一下就好。 */
+      return sb.from('subtasks').update(full).eq('id', twin.id).then(() => r, () => r);
     });
   }
 
@@ -747,10 +832,42 @@
           await quiet(sb.from('subtasks').update({ title: v }).eq('id', sub.id));
         },
       }));
+      /* ↔ 跟对面的哪一条是同一件事。绑上之后勾任意一边，另一边跟着一起完成 ——
+         书那边的章节进度条和大任务这边的步骤进度条就一起动了。
+         候选为空（对面还没有任何一条）时这个入口根本不出现。 */
+      const choices = linkChoices(sub);
+      if (choices.length || sub.link_id) {
+        const linked = linkedTo(sub);
+        /* 「不绑」放最前面。对家被删掉时（linked 找不到）它还会剩在库里，
+           这条兜底把它列出来，省得下拉框显示不出当前到底绑没绑。 */
+        const list = [{ id: '', label: '不绑' }];
+        if (linked && !choices.some((c) => c.id === linked.id)) {
+          list.push({ id: linked.id, label: parentLabel(linked) + ' · ' + (linked.title || '未填写') });
+        }
+        list.push(...choices);
+        box.appendChild(h('select', {
+          class: 'tiny link',
+          title: '把这一条和对面的一条绑成「同一件事」：勾任意一边，另一边自动跟着完成',
+          onchange: async (e) => {
+            const v = e.target.value;
+            const { error } = await setLink(sub, v || null);
+            if (error) { toast('没绑上：' + schemaWarn(error), true); renderCurrent(); return; }
+            await refresh();
+            toast(v ? '绑好了：这两条以后一起算完成' : '解开了，两边各自算各自的');
+          },
+        }, list.map((o) => h('option', {
+          value: o.id,
+          text: '↔ ' + o.label,
+          selected: o.id === (sub.link_id || ''),
+        }))));
+      }
       box.appendChild(h('button', {
         class: 'tiny danger', text: '✕',
         onclick: async () => {
           if (!confirm(isCh ? '删掉这一章？' : '删掉这个小任务？')) return;
+          /* 先松开对家，免得留下一根指着空气的指针 */
+          const twin = linkedTo(sub);
+          if (twin) { twin.link_id = null; await quiet(sb.from('subtasks').update({ link_id: null }).eq('id', twin.id)); }
           await commit(sb.from('subtasks').delete().eq('id', sub.id));
         },
       }));
@@ -958,8 +1075,8 @@
        她之后去「大任务拆解」把这一步勾上，setDone(true) 会用真实完成时刻覆盖 done_at，
        这条记录就自动从「今天动过」变成「已完成」—— 一份数据两种读法，不会两处对不上。 */
     const rows = S.subtasks
-      .filter((x) => x.done_at && isoDate(x.done_at) === t)
-      .map((x) => Object.assign({}, x, { __step: !x.done }))
+      .filter((x) => x.done_at && isoDate(x.done_at) === t && !isTwinEcho(x))
+      .map((x) => Object.assign({}, x, { __step: !x.done, __twin: linkedTo(x) }))
       .sort((a, b) => (a.__step === b.__step ? 0 : a.__step ? 1 : -1));   // 完成的排前面
     twoCols($('done-cols'), rows, (owner, list, mine) => {
       if (!list.length) return emptyNote(mine ? '今天还没记。上面记一笔。' : '对方今天还没记。');
@@ -975,6 +1092,10 @@
             ),
             h('div', { class: 'm' },
               h('span', { class: 'pill' + (parentIsRes(x) ? ' res' : ''), text: '→ ' + parentLabel(x) }),
+              /* 绑了「同一件事」的另一半，把那边也标出来 —— 免得她看见书那边没反应 */
+              x.__twin ? h('span', { class: 'pill' + (parentIsRes(x.__twin) ? ' res' : ''),
+                title: '这一条和那一半绑成了同一件事，勾哪边都一起算完成',
+                text: '↔ ' + parentLabel(x.__twin) }) : null,
               h('span', { text: relTime(x.done_at) })
             ),
             mine ? h('div', { class: 'acts' },
@@ -1050,8 +1171,10 @@
       ? '勾掉了「' + (j.sub.title || '这一章') + '」'
       : '今天推进了「' + (j.sub.title || '这一步') + '」');
     const hasStep = jobs.some((j) => j.kind === 'task');
+    const tied = jobs.filter((j) => linkedTo(j.sub)).length;
     toast('记下了：' + said.join('，') + '。' +
       (hasStep ? '大任务那一步还没算完成 —— 真做完了去「大任务拆解」勾上它。' : '') +
+      (tied ? '它绑着的另一半也跟着变了。' : '') +
       (blocked.length ? '（' + blocked[0] + '）' : ''));
     await refresh();
   }
@@ -1442,6 +1565,7 @@
     }
     for (const s of S.subtasks) {
       if (!s.done) continue;
+      if (isTwinEcho(s)) continue;        // 绑着的两条是同一件事，动态流里只出现一次
       ev.push({
         owner: s.owner, at: s.done_at || null, kind: 'done',
         text: parentIsRes(s) ? '完成章节 ' : '完成小任务 ',

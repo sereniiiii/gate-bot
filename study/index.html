@@ -139,7 +139,9 @@
         <label class="f" for="t-detail">这个任务要干什么（可选）</label>
         <input type="text" id="t-detail" placeholder="总体说明">
       </div>
-      <p class="hint">创建后会生成对应数量的空白小任务，你再逐个填内容。进度条 = 已完成小任务 / 总数。</p>
+      <p class="hint">创建后会生成对应数量的空白小任务，你再逐个填内容。进度条 = 已完成小任务 / 总数。<br>
+        每条小任务右边的 <b>↔</b> 是「同一件事」：这一步如果其实就是某本书的某一章，
+        在那儿绑一下，以后勾任意一边，两边一起算完成。</p>
     </div>
 
     <!-- 总览：所有大任务的完成率一览 -->
@@ -233,6 +235,8 @@
           <input type="number" id="r-chapters" min="0" max="200" step="1" placeholder="可留空"></div>
         <button class="primary" id="r-add">添加</button>
       </div>
+      <p class="hint">每一章右边的 <b>↔</b> 是「同一件事」：这一章如果就是某个大任务里的一步，
+        在那儿绑一下，以后勾任意一边，两边一起算完成。</p>
     </div>
 
     <div class="card">

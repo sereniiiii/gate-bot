@@ -206,6 +206,16 @@ const laneChip = (name) => byCls($('done-picker'), 'chip').find((c) => c.textCon
 async function laneOn(name) { const c = laneChip(name); if (c && !hasCls(c, 'on')) { c.fire('click'); await tick(); } }
 async function laneOff(name) { const c = laneChip(name); if (c && hasCls(c, 'on')) { c.fire('click'); await tick(); } }
 
+/* 一行小任务/章节：按**输入框里的名字**找，不按整行文字 ——
+   行里那个「↔」选择器的 option 文案会把对家所有章节名都带进行文本里。 */
+const subRowOf = (root, title) =>
+  findAll(root, (n) => hasCls(n, 'sub')).find((r) =>
+    findAll(r, (n) => n.tagName === 'INPUT' && n.type === 'text').some((i) => i.value === title)) || null;
+const rowSel = (row) => (row ? findAll(row, (n) => n.tagName === 'SELECT')[0] || null : null);
+const rowBox = (row) => (row ? findAll(row, (n) => n.tagName === 'INPUT' && n.type === 'checkbox')[0] || null : null);
+/* 选「↔ 某条」。真浏览器里是选下拉，这里直接给 change 一个假 target。 */
+async function pickLink(row, id) { rowSel(row).fire('change', { target: { value: id || '' } }); await tick(); await tick(); }
+
 const fails = [];
 const ok = (cond, label, extra) => {
   if (cond) console.log('  ✅ ' + label);
@@ -681,6 +691,128 @@ tabs[3].fire('click'); await tick();
 await laneOff('线性代数应该这样学');
 ok(byCls($('done-picker'), 'chip').length === 8,
   '两组都收回默认样子（只剩大任务那组）：chip 8 个，实际 ' + byCls($('done-picker'), 'chip').length);
+
+console.log('── 更强的同步：把「大任务的一步」和「书的一章」绑成同一件事 ──');
+const html2 = fs.readFileSync(path.join(DIR, 'index.html'), 'utf8');
+const sql5 = fs.readFileSync(path.join(DIR, 'setup-5-link.sql'), 'utf8');
+ok(/add column if not exists link_id/.test(sql5), 'setup-5-link.sql 加的是 link_id 那一列（可重复执行）');
+ok(/同一件事/.test(html2), 'index.html 里把「↔」讲清楚了（大任务拆解 / 学习资源各一句）');
+
+tabs[2].fire('click'); await tick();          // tasks
+const c1row = DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 1);
+const c2row = DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 2);
+const rowS2 = subRowOf($('tasks-cols'), '第 5-8 讲');
+ok(!!rowS2, '找得到「第 5-8 讲」这一行');
+const selS2 = rowSel(rowS2);
+ok(!!selS2, '每一步右边多了「↔ 同一件事」的选择器');
+ok(selS2.textContent.includes('↔ 不绑'), '默认是「不绑」：' + selS2.textContent.slice(0, 24));
+ok(selS2.textContent.includes('线性代数应该这样学 · 第 2 章'), '对家是这本书的章节，列了出来');
+ok(!selS2.textContent.includes('习题课'), '不列自己的兄弟姐妹 —— 只能跨「大任务 ↔ 资源」绑');
+ok(!selS2.textContent.includes('考研政治'), '对方的资源不出现');
+
+/* 绑之前两边状态故意不一样（s2 已完成、第 2 章没完成）→ 应该**问她一句**，不自己拉平 */
+const s2wasDone = DB.subtasks.find((x) => x.id === 's2').done;
+ok(s2wasDone === true && c2row.done === false, '绑之前两边状态确实不一样，正好用来测「问一句」');
+globalThis.confirm = () => false;             // 先答「不」
+await pickLink(rowS2, c2row.id);
+ok(DB.subtasks.find((x) => x.id === 's2').link_id === c2row.id &&
+   c2row.link_id === 's2', '两条互相指着 = 绑上了');
+ok(DB.subtasks.find((x) => x.id === 's2').done === true && c2row.done === false,
+  '她答「不」时，不替她把哪一边标成完成');
+ok($('toast').textContent.includes('绑好了'), '并且提示已经绑上：' + $('toast').textContent);
+globalThis.confirm = () => true;              // 后面的删除确认走真流程
+
+/* ── 核心：勾任意一边，另一边自动跟上 ──
+   先把两条都退回未完成：不然「对家完成了」可能只是它本来就完成着，
+   测出来的是空过（第一版就踩了这个坑，变异测试当场戳穿）。 */
+s2row.done = false; s2row.done_at = null;      // s2row 是上面「两组同时勾」那块定义的，同一个对象
+c2row.done = false; c2row.done_at = null;
+$('btn-refresh').fire('click'); await tick();
+
+tabs[4].fire('click'); await tick();          // res
+const r1card = findAll($('res-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('线性代数应该这样学'));
+const chRow2 = subRowOf(r1card, '第 2 章');
+ok(!!chRow2, '书的章节行也在（同一个 subRow 渲染的）');
+ok(!!rowSel(chRow2), '这一章右边也有那个「↔」');
+
+/* 日历上今天几件 —— 绑着的两条只能算一件 */
+tabs[1].fire('click'); await tick();
+const dBefore = Number(dcOf(now.getDate()) || 0);
+tabs[4].fire('click'); await tick();
+
+rowBox(subRowOf(findAll($('res-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('线性代数应该这样学')), '第 2 章'))
+  .fire('change', { target: { checked: true } });
+await tick(); await tick();
+
+ok(c2row.done === true, '勾了这一章，它自己完成');
+ok(s2row.done === true, '**大任务里对应的那一步跟着完成了**（勾一个另一个自动跟上）');
+ok(s2row.done_at === c2row.done_at, '两条用的是同一个时刻，不会被算成两天');
+
+tabs[1].fire('click'); await tick();
+ok(Number(dcOf(now.getDate()) || 0) === dBefore + 1,
+  '日历上今天只多 1 件，不是 2 件（绑着的两条是同一件事）：' +
+  dBefore + ' → ' + dcOf(now.getDate()));
+
+tabs[0].fire('click'); await tick();          // home
+const feedN = ($('feed').textContent.match(/完成章节|完成小任务/g) || []).length;
+tabs[4].fire('click'); await tick();
+rowBox(subRowOf(findAll($('res-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('线性代数应该这样学')), '第 2 章'))
+  .fire('change', { target: { checked: false } });
+await tick(); await tick();
+ok(c2row.done === false && s2row.done === false, '取消勾选，两边一起退回未完成');
+tabs[0].fire('click'); await tick();
+ok(($('feed').textContent.match(/完成章节|完成小任务/g) || []).length === feedN - 1,
+  '动态流里也只减 1 条，不是 2 条');
+
+/* ── 反方向：在「大任务拆解」里勾那一步，书那边跟着完成 ── */
+tabs[2].fire('click'); await tick();
+rowBox(subRowOf($('tasks-cols'), '第 5-8 讲')).fire('change', { target: { checked: true } });
+await tick(); await tick();
+ok(c2row.done === true, '在大任务那边勾，书的章节跟着完成（绑定是双向的）');
+
+/* ── 一对一：已经被占的对家，不再出现在别人的候选里 ── */
+const rowS3 = subRowOf($('tasks-cols'), '习题课');
+ok(!rowSel(rowS3).textContent.includes('第 2 章'), '第 2 章已经和第 5-8 讲绑了，不再出现在别的候选里');
+ok(rowSel(rowS3).textContent.includes('第 3 章'), '没被占的还能选');
+
+/* ── 解开 ── */
+await pickLink(rowS2, '');                    // 选「↔ 不绑」
+ok(DB.subtasks.find((x) => x.id === 's2').link_id == null && c2row.link_id == null,
+  '两边都松开了，不留单向指针');
+ok(c2row.done === true && DB.subtasks.find((x) => x.id === 's2').done === true,
+  '解开不会顺手改完成状态（各自保留当时的）');
+ok($('toast').textContent.includes('解开了'), '并且说一声：' + $('toast').textContent);
+
+/* ── 删掉一条，对家的指针要跟着松 ── */
+await pickLink(rowS3, c2row.id);
+ok(DB.subtasks.find((x) => x.id === 's3').link_id === c2row.id, '习题课 ←→ 第 2 章 绑上了');
+const s3row2 = DB.subtasks.find((x) => x.id === 's3');
+const s3keep2 = { done: s3row2.done, done_at: s3row2.done_at };
+tabs[4].fire('click'); await tick();
+const chRow3 = subRowOf(findAll($('res-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('线性代数应该这样学')), '第 2 章');
+btns(chRow3, '✕')[0].fire('click'); await tick(); await tick();
+ok(!DB.subtasks.some((x) => x.id === c2row.id), '第 2 章删掉了');
+ok(DB.subtasks.some((x) => x.id === 's3'), '（对家「习题课」还在，没被连坐）');
+ok(s3row2.link_id == null, '对家（习题课）的指针也被松开，不会指着一个不存在的东西');
+
+/* 收尾：把 s3 还回去、所有绑定清干净，后面的用例照旧 */
+Object.assign(s3row2, s3keep2);
+DB.subtasks.push(c2row);
+DB.subtasks.forEach((x) => { x.link_id = null; });
+$('btn-refresh').fire('click'); await tick();
+
+console.log('── 降级：还没跑 setup-5-link.sql ──');
+tabs[2].fire('click'); await tick();
+failNext = 'column "link_id" of relation "subtasks" does not exist';
+await pickLink(subRowOf($('tasks-cols'), '第 1-4 讲'),
+  DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 3).id);
+ok($('toast').textContent.includes('setup-5-link.sql'),
+  '缺列时被翻译成「去跑哪个脚本」，不甩 Postgres 原文：' + $('toast').textContent);
+ok(failNext === null, '（failNext 已消耗）');
 
 console.log('── 降级：还没跑 setup-4-chapters.sql ──');
 /* 没跑 SQL 时最真实的症状：资源根本分不了章 → 资源模式只能提示去分章，按钮点不动，
