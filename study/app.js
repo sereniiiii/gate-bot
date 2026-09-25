@@ -109,9 +109,19 @@
   /* 那一天一共推进了几件事（小任务 + 目标） */
   const dayCount = (e) => (e ? e.subs.length + e.goals.length : 0);
 
-  /* DOM 构造器。文字一律走 textContent —— 库里的内容是别人输入的，当不可信数据处理。 */
+  /* 判断一个值是不是 DOM 节点。真假 DOM 都能认：真节点有 nodeType，
+     假 DOM（smoke-test）的 El 两个都有。 */
+  const isNode = (v) => !!v && typeof v === 'object' && (v.nodeType || v.tagName);
+
+  /* DOM 构造器。文字一律走 textContent —— 库里的内容是别人输入的，当不可信数据处理。
+     第二参数本该是属性对象。**不要**写成 h('tr', h('td', …)) —— 那传进去的是个节点，
+     for...in 会顺着原型链捞到 offsetTop / children 这些**只读**访问器，
+     赋值抛 TypeError，把整块渲染（连同后面本该画的兄弟节点）一起带走。
+     这个坑在假 DOM 里测不出来（普通对象没有那些只读属性），所以在这里兜一道：
+     节点类型就当成子元素，而不是属性。 */
   function h(tag, props, ...kids) {
     const n = document.createElement(tag);
+    if (isNode(props)) { kids.unshift(props); props = null; }
     if (props) {
       for (const k in props) {
         const v = props[k];
@@ -1239,7 +1249,7 @@
     // 表格视图：对比度不足时的兜底，也让每个细分值不依赖 hover
     const tbody = h('tbody');
     for (const d of data) {
-      tbody.appendChild(h('tr',
+      tbody.appendChild(h('tr', null,
         h('td', { text: d.name }),
         ...KINDS.map((k) => h('td', { text: String(d[k.key]) })),
         h('td', { text: String(d.total) })
@@ -1249,7 +1259,7 @@
       h('summary', { text: '表格视图' }),
       h('div', { class: 'tblwrap' },
         h('table', null,
-          h('thead', null, h('tr',
+          h('thead', null, h('tr', null,
             h('th', { text: '学科' }),
             ...KINDS.map((k) => h('th', { text: k.label })),
             h('th', { text: '合计' })
@@ -1543,7 +1553,12 @@
     S.tab = name;
     document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === name));
     document.querySelectorAll('.pane').forEach((p) => { p.hidden = p.id !== 'pane-' + name; });
-    renderCurrent();
+    /* 渲染出错必须说话。以前这里是一句光秃秃的 renderCurrent()，
+       里面一抛异常就是「整块空白、一点提示都没有」——
+       资源列表因为这个毛病坏了一整轮，我对着截图才查出来。
+       刷新那条路径有 try/catch，切页签这条也必须一样。 */
+    try { renderCurrent(); }
+    catch (e) { toast('这一页渲染出错：' + (e && e.message ? e.message : e), true); }
   }
 
   /* ── 事件绑定 ──────────────────────────────────────────────── */

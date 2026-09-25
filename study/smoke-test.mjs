@@ -61,6 +61,16 @@ class El {
   set textContent(v) { this.children.length = 0; this._text = String(v); }
 }
 
+/* 真 DOM 的 offsetTop / offsetWidth 这些是**可枚举的只读访问器**，挂在原型链上，
+   赋值就抛 TypeError。假 El 里它们要么根本没有、要么是不可枚举的 class getter，
+   于是「把节点当属性对象传给 h()」这种错法
+   （h('tr', h('td', …)) → for...in 捞到 offsetTop → n.offsetTop = 0）
+   在假 DOM 里**静默通过**，在真浏览器里抛异常把整块渲染带走。
+   2026-09-26 学习资源列表就是这么整整坏了一轮没人知道的 —— 补上牙齿，让它在这里就炸。 */
+for (const [k, v] of [['offsetTop', 0], ['offsetLeft', 0], ['offsetHeight', 24], ['offsetWidth', 120]]) {
+  Object.defineProperty(El.prototype, k, { get: () => v, enumerable: true, configurable: true });
+}
+
 const reg = new Map();
 const TABNAMES = ['home', 'goals', 'tasks', 'daily', 'res', 'data'];
 const tabs = TABNAMES.map((t) => {
@@ -318,6 +328,16 @@ ok($('res-tiles').textContent.includes('资源总数'), '资源统计卡');
 const svg = $('res-chart').children[0];
 ok(svg.children.filter((c) => c.tagName === 'RECT' && String(c.attrs.fill).includes('--series-')).length > 0, '宏观图有数据段');
 ok(svg.children.filter((c) => c.tagName === 'TEXT').map((c) => c.textContent).includes('数学'), '图上有学科标签');
+/* 渲染必须一路走到最后。2026-09-26 的 bug 就是 renderResChart 里
+   h('tr', h('td', …)) 把节点当属性对象传 → 抛 TypeError → 后面的
+   twoCols($('res-cols'), …) 整块没执行，页面在图表之后戛然而止。
+   所以这里要断言的不只是图表，还有图表**下面**的东西 —— 图表自己画得好好的。 */
+const resTbl = findAll($('res-chart'), (n) => n.tagName === 'TABLE')[0];
+ok(resTbl && resTbl.textContent.includes('数学'), '学科总览下面的「表格视图」也渲染出来了');
+ok(resTbl && findAll(resTbl, (n) => n.tagName === 'TH').map((n) => n.textContent).join('|').includes('合计'),
+  '表格视图表头完整');
+ok(findAll($('res-cols'), (n) => hasCls(n, 'item')).length > 0, '图表下面的资源列表渲染出来了');
+ok(btns($('res-cols'), '删除').length > 0, '资源卡片上有删除按钮');
 tabs[5].fire('click'); await tick();
 ok($('export-meta').textContent.includes('目标 2'), '导出统计：' + $('export-meta').textContent);
 
