@@ -41,9 +41,15 @@
     tab: 'home',          // 登录后落在主页
     mood: null,
     month: '',            // 月行程表显示哪个月 'YYYY-MM'，空 = 本月
-    doneKind: 'task',     // 「今日完成情况」挂到哪：'task' 大任务 | 'res' 学习资源
-    doneRef: null,        // 挂到哪一条（大任务 id 或资源 id）
-    doneChapter: null,    // 选中的那个 subtask id：挂资源 = 哪一章，挂大任务 = 哪一步
+    /* 「今日完成情况」两组**各自独立**，可以同时选 —— 她问的「学习资源和大任务
+       可以同步勾选吗」。按下一次，选中的组全记掉：大任务那一步盖推进戳、资源那一章算完成。
+       doneOn[k]  这一组这次要不要记（再点一下选中的那个 = 整组不记）
+       doneRef[k] 这一组选中的父项 id
+       doneSub[k] 父项下面选中的那一步 / 那一章 id
+       默认只开大任务那一组，跟以前一样；要连带记资源自己点一下就行。 */
+    doneOn:  { task: true, res: false },
+    doneRef: { task: null, res: null },
+    doneSub: { task: null, res: null },
     resScope: 'all',      // all | me | other
     feedKind: 'all',      // all | done | log | res
     noDoneAt: false,      // 库里还没加 done_at 列时置位（setup-3-feed.sql 跑之前）
@@ -799,15 +805,12 @@
     }
   }
 
-  /* 挂到哪。chip 分两组：大任务 / 学习资源，只能选一个。
+  /* 挂到哪。chip 分两组：大任务 / 学习资源 —— **两组各自独立，可以同时选**。
+     以前是互斥的（选了资源，大任务那边自动取消），她问「学习资源和大任务可以同步
+     勾选吗」，改成各选各的：按下按钮，选中的组一次全记掉。
      用 chip 而不是下拉：通常就几个，一眼看全比展开菜单快。
      右侧 n/m 是这个父下面已经完成几件 —— 挑的时候不用来回翻页。
-
-     选了资源会多出第三组「第几章」。两种模式语义不一样，所以按钮和输入框跟着换：
-       挂大任务 = 写一件做过的事 → 在那个大任务下**新建**一条已完成的小任务
-       挂资源   = 勾掉这本书的某一章 → 直接改那一章的状态，**不新增行**
-     后者是她原话「每日任务勾选对应的章节」：书就那么几章，
-     不该每读完一章就往书里再长出一章。 */
+     再点一下已经选中的那个 = **这一组这次不记**（整组变回 ☐）—— 只做了一件事时用。 */
   function renderDoneForm() {
     const box = $('done-picker');
     const btn = $('done-btn');
@@ -816,13 +819,16 @@
     const tip = $('done-tip');
     clear(box);
 
-    const groups = [
-      ['task', '大任务', S.tasks.filter(isMine)],
-      ['res', '学习资源', S.resources.filter(isMine)],
-    ].filter((g) => g[2].length);
+    const lanes = [
+      ['task', '大任务', S.tasks.filter(isMine), subsOfTask],
+      ['res', '学习资源', S.resources.filter(isMine), subsOfRes],
+    ].filter((l) => l[2].length);
 
-    if (!groups.length) {
-      S.doneRef = null;
+    if (!lanes.length) {
+      /* 什么都没得挂 —— 整块退回最开始的样子，以后建了东西回来就是默认状态 */
+      S.doneOn = { task: true, res: false };
+      S.doneRef = { task: null, res: null };
+      S.doneSub = { task: null, res: null };
       box.appendChild(h('p', { class: 'hint', style: { margin: '0' },
         text: '你还没有大任务、也没有学习资源。先去「大任务拆解」或「学习资源」建一个 —— ' +
               '完成的事要挂在某样东西下面，才能同步过去。' }));
@@ -830,59 +836,67 @@
       return;
     }
 
-    /* 选中的那个可能刚被删掉 / 或还没选过，退回第一组的第一个 */
-    const alive = groups.find(([k, , rows]) => k === S.doneKind && rows.some((r) => r.id === S.doneRef));
-    if (!alive) { S.doneKind = groups[0][0]; S.doneRef = groups[0][2][0].id; }
+    /* 只有一边有东西时，默认就记那一边（不然她得先点一下才有东西可选） */
+    if (lanes.length === 1) S.doneOn[lanes[0][0]] = true;
 
-    groups.forEach(([kind, label, rows]) => {
+    for (const [kind, , rows] of lanes) {
+      /* 选中的那个可能刚被删掉 / 或还没选过，退回这一组的第一个 */
+      if (!rows.some((r) => r.id === S.doneRef[kind])) S.doneRef[kind] = rows[0].id;
+    }
+
+    for (const [kind, label, rows, subsFn] of lanes) {
+      const on = !!S.doneOn[kind];
       box.appendChild(h('div', { class: 'chips-group' },
         h('span', { class: 'cg-label', text: label }),
         h('div', { class: 'chips' },
           rows.map((r) => {
-            const on = S.doneKind === kind && S.doneRef === r.id;
-            const subs = kind === 'task' ? subsOfTask(r.id) : subsOfRes(r.id);
+            const sel = on && S.doneRef[kind] === r.id;
+            const subs = subsFn(r.id);
             const dn = subs.filter((x) => x.done).length;
             return h('button', {
               type: 'button',
-              class: 'chip' + (on ? ' on' : ''),
-              'aria-pressed': on ? 'true' : 'false',
-              onclick: () => { S.doneKind = kind; S.doneRef = r.id; renderDoneForm(); },
+              class: 'chip' + (sel ? ' on' : ''),
+              'aria-pressed': sel ? 'true' : 'false',
+              title: sel ? '再点一下 = 这一组这次不记' : '',
+              onclick: () => {
+                if (sel) S.doneOn[kind] = false;
+                else { S.doneOn[kind] = true; S.doneRef[kind] = r.id; }
+                renderDoneForm();
+              },
             },
-              h('span', { class: 'ck', text: on ? '☑' : '☐' }),
+              h('span', { class: 'ck', text: sel ? '☑' : '☐' }),
               h('span', { class: 'ct', text: r.title || r.name || '(无标题)' }),
               h('span', { class: 'cn', text: dn + '/' + subs.length })
             );
           })
         )
       ));
-    });
 
-    const isRes = S.doneKind === 'res';
-    const parent = isRes ? S.resources.find((r) => r.id === S.doneRef)
-                         : S.tasks.find((t) => t.id === S.doneRef);
-    const chs = parent ? (isRes ? subsOfRes(parent.id) : subsOfTask(parent.id)) : [];
-
-    /* 第三组。两种模式共用 doneChapter：
-         挂资源 = 勾哪一章（勾了就**算完成**）
-         挂大任务 = 今天推进了哪一步（**只记录，不算完成**）
-       切模式时 id 对不上，下面这句兜底会把它退回第一条没完成的。 */
-    if (chs.length) {
-      if (!chs.some((x) => x.id === S.doneChapter)) {
-        S.doneChapter = (chs.find((x) => !x.done) || chs[0]).id;
+      /* 这一组选中的那条下面，这次记哪一步 / 哪一章。两组各自摊各自的那一行：
+           挂资源   = 勾哪一章（勾了就**算完成**）
+           挂大任务 = 今天推进了哪一步（**只记录，不算完成**）
+         两组语义故意不一样，所以按钮上会把「算不算完成」写清楚。 */
+      if (!on) continue;
+      const parent = rows.find((r) => r.id === S.doneRef[kind]);
+      const chs = parent ? subsFn(parent.id) : [];
+      if (!chs.length) continue;
+      if (!chs.some((x) => x.id === S.doneSub[kind])) {
+        S.doneSub[kind] = (chs.find((x) => !x.done) || chs[0]).id;
       }
+      const isRes = kind === 'res';
       box.appendChild(h('div', { class: 'chips-group' },
         h('span', { class: 'cg-label', text: isRes ? '第几章' : '哪一步' }),
         h('div', { class: 'chips' },
           chs.map((x) => {
-            const on = S.doneChapter === x.id;
+            const sel = S.doneSub[kind] === x.id;
             return h('button', {
               type: 'button',
-              class: 'chip' + (on ? ' on' : '') + (x.done ? ' done' : ''),
-              'aria-pressed': on ? 'true' : 'false',
+              class: 'chip' + (sel ? ' on' : '') + (x.done ? ' done' : ''),
+              'aria-pressed': sel ? 'true' : 'false',
               title: x.done ? (isRes ? '这一章已经勾过了' : '这一步已经完成了') : '',
-              onclick: () => { S.doneChapter = x.id; renderDoneForm(); },
+              onclick: () => { S.doneSub[kind] = x.id; renderDoneForm(); },
             },
-              h('span', { class: 'ck', text: x.done ? '✅' : (on ? '☑' : '☐') }),
+              h('span', { class: 'ck', text: x.done ? '✅' : (sel ? '☑' : '☐') }),
               h('span', { class: 'ct', text: x.title || '(未填写)' })
             );
           })
@@ -894,33 +908,44 @@
        会越记越长、分母越来越大，而且替她宣布了「完成」—— 她明确说不要。
        现在两种模式都是「选一个父项、选其中一条」，小任务该在「大任务拆解」里拆、在那里勾。 */
 
-    if (isRes) {
-      plabel.textContent = '属于哪本书 / 哪门课';
-      if (!chs.length) {
-        btn.disabled = true;
-        btn.textContent = '这本书还没分章';
-        tip.textContent = '先去「学习资源」里给它「＋ 分章」';
-      } else {
-        btn.disabled = false;
-        btn.textContent = '勾掉这一章（算完成）';
-        tip.textContent = '勾完，这本书的章节进度条和月行程表立刻跟着变';
-      }
-      lead.textContent = '选中一本书 / 一门课，再勾掉这次读完的那一章 —— ' +
-        '它就算真的完成了，这本书的进度条、月行程表会同步更新。';
-    } else {
-      plabel.textContent = '属于哪个大任务';
-      if (!chs.length) {
-        btn.disabled = true;
-        btn.textContent = '这个大任务还没拆步';
-        tip.textContent = '先去「大任务拆解」把它拆成几步，再回来记推进';
-      } else {
-        btn.disabled = false;
-        btn.textContent = '只记一笔：今天推进了这一步';
-        tip.textContent = '只记录今天动过它，进度条不动 —— 真做完了去「大任务拆解」自己勾';
-      }
-      lead.textContent = '选中一个大任务，再选中今天推进的那一步 —— 这里只记一笔，' +
-        '不会替你把它标成完成。真做完了，去「大任务拆解」勾上它，那时才算完成。';
+    /* 按钮上写清楚这一下会记几条、算不算完成 —— 省得她猜 */
+    const plan = [];      // 这次真要记的组
+    const stuck = [];     // 勾了但记不了的组（大任务还没拆步 / 这本书还没分章）
+    for (const [kind, , rows, subsFn] of lanes) {
+      if (!S.doneOn[kind]) continue;
+      const parent = rows.find((r) => r.id === S.doneRef[kind]);
+      if (!parent) continue;
+      if (subsFn(parent.id).length) plan.push(kind); else stuck.push(kind);
     }
+
+    plabel.textContent = '这次要记什么（两组可以同时选）';
+    lead.textContent = '两组可以只选一组，也可以各选一条同时记 —— 都选就一次记完。' +
+      '大任务那一步只记一笔「今天推进了」，不算完成；资源那一章勾掉就算完成。';
+
+    if (!plan.length) {
+      btn.disabled = true;
+      if (stuck.length) {
+        const isRes = stuck[0] === 'res';
+        btn.textContent = isRes ? '这本书还没分章' : '这个大任务还没拆步';
+        tip.textContent = isRes ? '先去「学习资源」里给它「＋ 分章」'
+                                : '先去「大任务拆解」把它拆成几步，再回来记推进';
+      } else {
+        btn.textContent = '先选一样要记的';
+        tip.textContent = '点上面的大任务或学习资源 —— 再点一下选中的那个，就是这组这次不记';
+      }
+      return;
+    }
+
+    btn.disabled = false;
+    const both = plan.length === 2;
+    btn.textContent = both ? '两样一起记：推进这一步 + 勾掉这一章'
+      : plan[0] === 'res' ? '勾掉这一章（算完成）'
+      : '只记一笔：今天推进了这一步';
+    tip.textContent = both
+      ? '大任务那一步只记一笔推进（还不算完成）；这一章勾掉就算完成'
+      : plan[0] === 'res'
+        ? '勾完，这本书的章节进度条和月行程表立刻跟着变'
+        : '只记录今天动过它，进度条不动 —— 真做完了去「大任务拆解」自己勾';
   }
 
   /* 今天完成的事 —— 直接来自 subtasks，谁的都列出来。
@@ -975,50 +1000,59 @@
     }, { everyone: true });
   }
 
-  /* 记一笔。两种模式的语义**故意不一样**，是她明确要求的：
+  /* 记一笔。两组都勾了就**一次记两条**（她问的「学习资源和大任务可以同步勾选吗」）。
+     两组语义**故意不一样**，是她明确要求的：
        大任务 —— 只给选中的那一步盖今天的时间戳，**不改完成状态**。
                  真做完了要她自己去「大任务拆解」勾（原话：
                  「不要勾选后就默认大任务的某个阶段完成了」）。
-                 以前这里是凭空新建一条已完成的小任务，会让大任务越记越长、分母越来越大。
-       资源   —— 把选中的那一章勾掉，那就算完成（书就那么几章，不该越读越多）。 */
+       资源   —— 把选中的那一章勾掉，那就算完成（书就那么几章，不该越读越多）。
+     一组失败就停在那里报错，不会闷声只记一半。 */
   async function addDone() {
     const btn = $('done-btn');
+    const jobs = [];      // 这次要记的
+    const blocked = [];   // 勾了但记不了的（已经完成过），拿第一条告诉她
 
-    if (S.doneKind === 'res') {
-      const r = S.resources.find((x) => x.id === S.doneRef && isMine(x));
-      if (!r) { toast('先在上面选一本书 / 一门课', true); return; }
-      const ch = subsOfRes(r.id).find((x) => x.id === S.doneChapter);
-      if (!ch) { toast('再选一章', true); return; }
-      if (ch.done) {
-        toast('「' + (ch.title || '这一章') + '」已经勾过了', true);
-        return;
-      }
-      btn.disabled = true;
-      const { error } = await setDone('subtasks', ch.id, true);
-      btn.disabled = false;
-      if (error) { toast('没勾上：' + schemaWarn(error), true); return; }
-      toast('勾上了：' + (ch.title || '这一章') + ' · ' + (r.name || ''));
-      await refresh();
-      return;
+    if (S.doneOn.task) {
+      const task = S.tasks.find((x) => x.id === S.doneRef.task && isMine(x));
+      const step = task ? subsOfTask(task.id).find((x) => x.id === S.doneSub.task) : null;
+      if (!task || !step) { toast('先在上面勾一个它属于哪个大任务', true); return; }
+      if (step.done) blocked.push('「' + (step.title || '这一步') + '」已经完成了，不用再记推进');
+      else jobs.push({ kind: 'task', task, sub: step });
     }
 
-    const task = S.tasks.find((x) => x.id === S.doneRef && isMine(x));
-    if (!task) { toast('先在上面勾一个它属于哪个大任务', true); return; }
+    if (S.doneOn.res) {
+      const r = S.resources.find((x) => x.id === S.doneRef.res && isMine(x));
+      const ch = r ? subsOfRes(r.id).find((x) => x.id === S.doneSub.res) : null;
+      if (!r || !ch) { toast('先在上面选一本书 / 一门课', true); return; }
+      if (ch.done) blocked.push('「' + (ch.title || '这一章') + '」已经勾过了');
+      else jobs.push({ kind: 'res', res: r, sub: ch });
+    }
 
-    const step = subsOfTask(task.id).find((x) => x.id === S.doneChapter);
-    if (!step) { toast('再选今天推进的那一步', true); return; }
-    if (step.done) {
-      toast('「' + (step.title || '这一步') + '」已经完成了，不用再记推进', true);
+    if (!jobs.length) {
+      toast(blocked.length ? blocked[0] : '先在上面选一样要记的', true);
       return;
     }
 
     btn.disabled = true;
-    const { error } = await stampStep(step.id);
+    for (const j of jobs) {
+      const { error } = j.kind === 'res'
+        ? await setDone('subtasks', j.sub.id, true)
+        : await stampStep(j.sub.id);
+      if (error) {
+        btn.disabled = false;
+        toast('没记上：' + (j.kind === 'res' ? schemaWarn(error) : error.message), true);
+        return;
+      }
+    }
     btn.disabled = false;
-    if (error) { toast('没记上：' + error.message, true); return; }
 
-    toast('记下了：今天推进了「' + (step.title || '这一步') + '」· ' + (task.title || '无标题') +
-          '。它还没算完成 —— 真做完了去「大任务拆解」勾上它。');
+    const said = jobs.map((j) => j.kind === 'res'
+      ? '勾掉了「' + (j.sub.title || '这一章') + '」'
+      : '今天推进了「' + (j.sub.title || '这一步') + '」');
+    const hasStep = jobs.some((j) => j.kind === 'task');
+    toast('记下了：' + said.join('，') + '。' +
+      (hasStep ? '大任务那一步还没算完成 —— 真做完了去「大任务拆解」勾上它。' : '') +
+      (blocked.length ? '（' + blocked[0] + '）' : ''));
     await refresh();
   }
 

@@ -158,15 +158,16 @@
     <div class="card">
       <h2>今天完成了什么</h2>
       <p class="hint" style="margin-top:0" id="done-lead">
-        选中一个大任务，再选中今天推进的那一步 —— 这里只记一笔，不会替你把它标成完成。
+        两组可以只选一组，也可以各选一条同时记 —— 都选就一次记完。
+        大任务那一步只记一笔「今天推进了」，不算完成；资源那一章勾掉就算完成。
       </p>
       <div class="field" style="margin-top:12px">
-        <label class="f" id="done-picker-label">属于哪个大任务</label>
+        <label class="f" id="done-picker-label">这次要记什么（两组可以同时选）</label>
         <div id="done-picker"></div>
       </div>
       <div class="row tight" style="margin-top:14px">
-        <button class="primary" id="done-btn">只记一笔：今天推进了这一步</button>
-        <span class="hint" style="margin:0" id="done-tip">只记录今天动过它，进度条不动</span>
+        <button class="primary" id="done-btn">先选一样要记的</button>
+        <span class="hint" style="margin:0" id="done-tip">点上面的大任务或学习资源 —— 再点一下选中的那个，就是这组这次不记</span>
       </div>
       <p class="hint" id="done-warn" hidden></p>
     </div>

@@ -200,6 +200,12 @@ const find = (root, pred) => findAll(root, pred)[0] || null;
 const btns = (root, label) => findAll(root, (n) => n.tagName === 'BUTTON' && n.textContent.trim() === label);
 const inputs = (root) => findAll(root, (n) => n.tagName === 'INPUT' && n.type === 'text').map((n) => n.value);
 
+/* 「今日完成情况」那两组是各自开着的开关（再点一下选中的那个 = 这组这次不记），
+   开还是关会跟着前面的用例变。写死「点一下就能选中」太脆，用这两个按状态点。 */
+const laneChip = (name) => byCls($('done-picker'), 'chip').find((c) => c.textContent.includes(name));
+async function laneOn(name) { const c = laneChip(name); if (c && !hasCls(c, 'on')) { c.fire('click'); await tick(); } }
+async function laneOff(name) { const c = laneChip(name); if (c && hasCls(c, 'on')) { c.fire('click'); await tick(); } }
+
 const fails = [];
 const ok = (cond, label, extra) => {
   if (cond) console.log('  ✅ ' + label);
@@ -446,12 +452,23 @@ const tchip = chips.find((c) => c.textContent.includes('学完线性代数'));
 ok(!!tchip, '大任务 chip 在');
 ok(tchip.className.includes('on'), '默认选中一个 —— 不能让人先点一下才能记');
 ok(tchip.textContent.includes('3/3'), 'chip 上带当前进度，记之前就知道要挂到哪');
+/* 再点一下**已选中的那个** = 这一组这次不记。以前是「再点也不掉」，
+   现在两组可以同时勾，就必须有个办法把其中一组关掉 —— 否则今天只做了一件事时
+   没法只记一边。（开关是可逆的，下面马上点回来。） */
 tchip.fire('click'); await tick();
+ok(!byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).className.includes('on'),
+  '再点一下选中的那个 = 这一组这次不记');
+ok(!$('done-picker').textContent.includes('哪一步'), '关掉的那组连「哪一步」一起收起来，不留半截');
+ok($('done-btn').disabled === true && $('done-btn').textContent.includes('先选一样'),
+  '两组都没选时按钮点不动，并说清要先选：' + $('done-btn').textContent);
+byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).fire('click'); await tick();
 ok(byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).className.includes('on'),
-  '再点一下仍是选中态（不会点没了）');
+  '再点回来又能选中（开关是可逆的）');
 ok(byCls($('done-picker'), 'chips-group').length === 3, '分成「大任务」「学习资源」「哪一步」三组');
 ok($('done-picker').textContent.includes('学习资源'), '资源那一组有组名');
-const stepGroup = byCls($('done-picker'), 'chips-group')[2];
+/* 组的顺序 = 大任务 / 哪一步 / 学习资源（开着的组紧跟在自己的父项后面），
+   别按下标取，按组名找 */
+const stepGroup = byCls($('done-picker'), 'chips-group').find((g) => g.textContent.includes('哪一步'));
 ok(stepGroup.textContent.includes('哪一步'), '第三组叫「哪一步」');
 ok(stepGroup.textContent.includes('习题课'), '「哪一步」列出这个大任务的三个阶段');
 ok(byCls(stepGroup, 'chip').length === 3, '三步都列出来了，实际 ' + byCls(stepGroup, 'chip').length);
@@ -567,14 +584,25 @@ ok(!!rchip, '资源也出现在选择器里');
 rchip.fire('click'); await tick();
 ok(byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('线性代数应该这样学')).className.includes('on'),
   '点资源能选中它');
-ok(!byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).className.includes('on'),
-  '选资源的同时，大任务那个自动取消（互斥，不会同时挂两边）');
+/* 她问的那件事：两组**不再互斥** —— 选资源不会把大任务那边取消掉 */
+ok(byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).className.includes('on'),
+  '选资源的同时，大任务那边**仍然选中**（两组可以同步勾，不再互斥）');
 const chChips = byCls($('done-picker'), 'chip').filter((c) => /^第 \d+ 章$/.test(c.textContent.replace(/[☐☑✅]/g, '').trim()));
 ok(chChips.length === 3, '选完资源会摊开它的 3 章，实际 ' + chChips.length);
 ok(chChips[0].className.includes('on'), '默认落在第 1 章 —— 顺着往下读的人不用每次自己点');
-ok(byCls($('done-picker'), 'chips-group').length === 3, '三组：大任务 / 学习资源 / 第几章');
-ok($('done-btn').textContent.includes('算完成'),
-  '资源模式按钮把口径写明：勾这一章就算完成 —— ' + $('done-btn').textContent);
+ok(byCls($('done-picker'), 'chips-group').length === 4,
+  '四组：大任务 / 哪一步 / 学习资源 / 第几章 —— 两组各摊各的，实际 ' +
+  byCls($('done-picker'), 'chips-group').length);
+ok($('done-btn').textContent.includes('两样一起记'),
+  '两组都勾着时按钮写明这一下会记两条：' + $('done-btn').textContent);
+ok($('done-tip').textContent.includes('还不算完成') && $('done-tip').textContent.includes('就算完成'),
+  '并写清两条各自算不算完成：' + $('done-tip').textContent);
+
+/* 但「今天只读了一章」更常见 → 把大任务那组关掉，只记资源 */
+await laneOff('学完线性代数');
+ok(!$('done-picker').textContent.includes('哪一步'), '关掉的那组连「哪一步」一起收起来');
+ok($('done-btn').textContent.includes('算完成') && !$('done-btn').textContent.includes('两样'),
+  '只剩资源一组，按钮回到「勾掉这一章（算完成）」：' + $('done-btn').textContent);
 
 const nBeforeRes = DB.subtasks.length;
 const ch1row = DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 1);
@@ -612,6 +640,48 @@ tabs[0].fire('click'); await tick();          // home
 ok($('feed').textContent.includes('完成章节'), '动态流用「完成章节」而不是「完成小任务」');
 ok($('feed').textContent.includes('线性代数应该这样学'), '并标出是哪本书');
 
+console.log('── 核心：两组同时勾，一次记完两条 ──');
+/* 真实场景：今天读了一章，顺手也推进了大任务的一步 —— 一次按下去两条一起落。
+   挑一步还没完成的：把 s2 退回未完成（测完还回去）。 */
+const s2row = DB.subtasks.find((x) => x.id === 's2');
+const s2keep = { done: s2row.done, done_at: s2row.done_at };
+s2row.done = false; s2row.done_at = null;
+$('btn-refresh').fire('click'); await tick();
+tabs[3].fire('click'); await tick();
+
+await laneOn('学完线性代数');
+byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('第 5-8 讲')).fire('click'); await tick();
+await laneOn('线性代数应该这样学');
+byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('第 2 章')).fire('click'); await tick();
+
+ok(byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).className.includes('on') &&
+   byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('线性代数应该这样学')).className.includes('on'),
+  '两组各选中一条，同时挂着');
+ok($('done-btn').textContent.includes('两样一起记'), '按钮：' + $('done-btn').textContent);
+
+const ch2row = DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 2);
+const nBeforeBoth = DB.subtasks.length;
+$('done-btn').fire('click'); await tick(); await tick();
+
+ok(DB.subtasks.length === nBeforeBoth,
+  '一次记两条也**不新增行**，实际多了 ' + (DB.subtasks.length - nBeforeBoth));
+ok(s2row.done === false && typeof s2row.done_at === 'string' &&
+   Math.abs(Date.now() - new Date(s2row.done_at).getTime()) < 60000,
+  '大任务那一步：只盖推进戳，done 仍然是 false');
+ok(ch2row.done === true && typeof ch2row.done_at === 'string',
+  '资源那一章：真的算完成，done = true');
+ok($('toast').textContent.includes('今天推进了') && $('toast').textContent.includes('勾掉了'),
+  '一条提示把两条都说清楚：' + $('toast').textContent);
+
+/* 还回去：s2 恢复、第 2 章退回未勾、资源那组关掉，后面的用例照旧 */
+Object.assign(s2row, s2keep);
+ch2row.done = false; ch2row.done_at = null;
+$('btn-refresh').fire('click'); await tick();
+tabs[3].fire('click'); await tick();
+await laneOff('线性代数应该这样学');
+ok(byCls($('done-picker'), 'chip').length === 8,
+  '两组都收回默认样子（只剩大任务那组）：chip 8 个，实际 ' + byCls($('done-picker'), 'chip').length);
+
 console.log('── 降级：还没跑 setup-4-chapters.sql ──');
 /* 没跑 SQL 时最真实的症状：资源根本分不了章 → 资源模式只能提示去分章，按钮点不动，
    而不是让她点一下才发现写不进去。 */
@@ -629,7 +699,8 @@ ok($('toast').textContent.includes('setup-4-chapters.sql'),
   '分章失败被翻译成「去跑哪个脚本」，而不是把 Postgres 原文甩给她：' + $('toast').textContent);
 
 tabs[3].fire('click'); await tick();
-const rchip2 = byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('线性代数应该这样学'));
+await laneOff('学完线性代数');               // 只看资源那组
+const rchip2 = laneChip('线性代数应该这样学');
 rchip2.fire('click'); await tick();
 ok($('done-btn').disabled === true, '没分章的资源：按钮禁用，不会点了才发现没用');
 ok($('done-btn').textContent === '这本书还没分章', '并直接告诉她卡在哪：' + $('done-btn').textContent);
@@ -643,8 +714,8 @@ console.log('── 自由文本框整块去掉了（回车 / 输入法那套跟
 tabs[3].fire('click'); await tick();
 /* 以前是「写一条 → 回车提交」，还专门挡过中文输入法选词时的回车。
    现在两种模式都是「选父项 → 选其中一条」，没有文本框，那套逻辑一起删干净了。 */
-byCls($('done-picker'), 'chip').find((c) => c.textContent.includes('学完线性代数')).fire('click');
-await tick();
+await laneOff('线性代数应该这样学');         // 只留大任务那组
+await laneOn('学完线性代数');
 ok($('done-btn').textContent.includes('只记一笔'), '切回大任务模式，按钮仍是「只记一笔」：' + $('done-btn').textContent);
 ok($('done-picker').textContent.includes('哪一步'), '「哪一步」那一组在');
 ok($('done-tip').textContent.includes('大任务拆解'),
@@ -682,6 +753,7 @@ DB.resources.push(...keepRes);
 $('btn-refresh').fire('click'); await tick();
 tabs[3].fire('click'); await tick();
 ok($('done-btn').disabled === false, '大任务回来之后按钮恢复可用');
+/* 上一刻「什么都没得挂」把两组的选择清空了，回到出厂状态 = 只开大任务那组 */
 ok(byCls($('done-picker'), 'chip').length === 8, 'chip 回来了（1 大任务 + 4 资源 + 3 步）');
 
 console.log('── 降级：库里还没加 done_at 列（她还没跑 setup-3-feed.sql）──');
