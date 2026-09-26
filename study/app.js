@@ -21,6 +21,12 @@
   const APP_ID      = 'study-collab';
   const APP_VERSION = 1;
 
+  /* 站名（登录页和主页那两个 h1、以及浏览器标签页标题）。
+     库里的 site 表有值时用库里的，没有就用这个 —— 见 setup-10-site.sql。
+     改默认值要同时改 index.html 里那三处写死的 <title> / <h1>（兜底那句话）。 */
+  const DEFAULT_TITLE = 'Alano';
+  const TITLE_MAX = 24;
+
   const MOODS  = ['😞', '😕', '😐', '🙂', '😄'];   // 下标 0..4 → 存 1..5
   const KINDS  = [
     { key: 'book',    label: '工具书', varName: '--series-1' },
@@ -136,6 +142,12 @@
        lkNoTable = links 表还没建，这时退回「只能一对一」的旧样子。 */
     links: [],
     lkNoTable: false,
+    /* 站名。和校训一样是两个人的共同装饰，不按 owner 分（见 setup-10-site.sql）。
+       stNoTable = site 表还没建，这时用 DEFAULT_TITLE + 本机记住的那个，
+       页面上改不了（会明说去跑脚本）。
+       siteTitle 就是此刻该显示的名字 —— document.title 和两个 h1 都从它来。 */
+    siteTitle: DEFAULT_TITLE,
+    stNoTable: false,
   };
 
   /* ── 小工具 ────────────────────────────────────────────────── */
@@ -618,6 +630,7 @@
     await loadExams();          // 单独一条，失败不影响上面任何一张表
     await loadMottos();         // 同上：校训表没建也不能连累谁
     await loadLinks();          // 同上：关联表没建就退回旧的一对一
+    await loadSite();           // 同上：站名表没建就退回写死的默认名
     /* 池子换成库里的那份之后要重画一次 —— showApp() 里那次抽签发生在
        loadAll 之前，抽的是兜底清单；不在这儿补一刀的话，
        库里明明有校训，页面却一直显示内置那条。
@@ -671,6 +684,52 @@
     S.lkNoTable = false;
     S.links = r.data || [];
     return true;
+  }
+
+  /* 站名也是**单独一条**，理由同上：setup-10-site.sql 没跑过时 site 表不存在，
+     不能让整页跟着读不出来。表没建时退回「本机记住的上次那个 / 默认名」，
+     页面上明说去跑脚本，其余功能一概不受影响。
+     limit(1)：这张表物理上只有一行（主键恒为 true + check 约束），
+     写 limit 是为了万一有人在 SQL 里硬塞进来第二行时，页面拿到的仍是确定的一条。 */
+  async function loadSite() {
+    const r = await sb.from('site').select('*').limit(1);
+    if (r.error) {
+      S.stNoTable = true;
+      S.siteTitle = cachedTitle() || DEFAULT_TITLE;
+      applyTitle();
+      return false;
+    }
+    S.stNoTable = false;
+    const row = (r.data || [])[0];
+    S.siteTitle = (row && row.title) ? row.title : DEFAULT_TITLE;
+    cacheTitle(S.siteTitle);
+    applyTitle();
+    return true;
+  }
+
+  /* ── 站名：本机记住一份 ──────────────────────────────────────
+     为什么需要这个：登录页那两个 h1 在**登录之前**就要显示名字，
+     而库里的名字要登录后才读得到（RLS 只给登录的人读）。
+     不记的话，每次打开页面都先从 Alano 闪一下再变成自己的名字。
+     localStorage 不是哪都有（隐私模式会抛、Node 里跑测试根本没有），
+     所以一律 try/catch 兜住：取不到就当没记过，不影响用。 */
+  const TITLE_KEY = 'study-collab:title';
+  function cachedTitle() {
+    try { return localStorage.getItem(TITLE_KEY) || ''; } catch (e) { return ''; }
+  }
+  function cacheTitle(v) {
+    try { localStorage.setItem(TITLE_KEY, v); } catch (e) { /* 记不住就算了 */ }
+  }
+
+  /* 一次刷三处：浏览器标签页标题、登录页那个 h1、页头那个 h1。
+     两个 h1 显示的是**同一个名字** —— 各写各的会让同一屏里两个名字打架。 */
+  function applyTitle() {
+    const t = S.siteTitle || DEFAULT_TITLE;
+    document.title = t;
+    const a = $('lg-title');
+    const b = $('home-title');
+    if (a) a.textContent = t;
+    if (b) b.textContent = t;
   }
 
   /* 显示用的那一份：库里有就用库里的，没有就用兜底清单。
@@ -763,6 +822,17 @@
     if (/links/i.test(m) && /(schema cache|does not exist|relation|not find)/i.test(m)) {
       return '库里还没有「同一件事」这张关联表。去 Supabase 后台跑一次 study/setup-9-links.sql，'
            + '在那之前只能一条对一条地绑。';
+    }
+    /* 名字长度那道闸门（site_title_len）没过。页面上 maxlength=24 已经拦了一道，
+       这里管的是「从别处塞进来的超长名字」—— 说清楚是长度问题，别甩约束名给她。
+       ⚠️ 这条必须排在下面那条「表不存在」**前面**：约束报错的原话是
+       `new row for relation "site" violates check constraint "site_title_len"`，
+       里面既有 relation 又有带引号的 site，会被「表还没建」那条整条吃掉。 */
+    if (/site_title_len/i.test(m)) {
+      return '这个名字存不下：要 1~' + TITLE_MAX + ' 个字（现在太短、太长、或者全是空格）。';
+    }
+    if (/\bsite\b/i.test(m) && /(schema cache|does not exist|relation|not find)/i.test(m)) {
+      return '库里还没有站名这张表。去 Supabase 后台跑一次 study/setup-10-site.sql 再回来。';
     }
     return m;
   }
@@ -2436,11 +2506,15 @@
         supabase_url: SUPABASE_URL,
         supabase_key: SUPABASE_KEY,
         tables: ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources',
-                 'exams', 'mottos', 'links'],
+                 'exams', 'mottos', 'links', 'site'],
         schema_sql: 'study/setup.sql + setup-3-feed.sql + setup-4-chapters.sql + setup-5-link.sql'
                   + ' + setup-6-exams.sql + setup-7-countdown.sql + setup-8-mottos.sql'
-                  + ' + setup-9-links.sql（都可重复执行）',
+                  + ' + setup-9-links.sql + setup-10-site.sql（都可重复执行）',
       },
+      /* 站名单独放在**顶层**，不塞进 data —— data 里每张表按 owner 过滤（各导各的），
+         而 site 没有 owner：塞进去会被当成「对方的行」跳掉，导入说明里就多出一句
+         莫名其妙的「跳过 1 行」。这里只是把当前站名记下来，供人/CI 看。 */
+      site: { title: S.siteTitle || DEFAULT_TITLE, table_ready: !S.stNoTable },
       me: S.me ? { id: S.me.id, email: S.me.email, display_name: nameOf(S.me.id) } : null,
       counts: {
         profiles: S.profileList.length, goals: S.goals.length, tasks: S.tasks.length,
@@ -2467,7 +2541,46 @@
       ' · 日记 ' + S.daily.length + ' · 资源 ' + S.resources.length +
       ' · 考试 ' + S.exams.length +
       ' · 关联 ' + S.links.length;
+    renderSiteAdmin();
     renderMottoAdmin();
+  }
+
+  /* ── 站名管理（「导出 / 导入」页最下面那一块，在校训上面）────────
+     和校训同一套路：一张**没有 owner** 的共同表，谁改两边都变。
+     区别是这张表只有一行，所以不画列表，就一个输入框 + 保存。 */
+  function renderSiteAdmin() {
+    $('st-warn').textContent = S.stNoTable
+      ? '库里还没有这张表 —— 去 Supabase 后台跑一次 study/setup-10-site.sql。'
+        + '在那之前显示的是页面里写死的名字，改了存不下。'
+      : '';
+
+    /* 正在这个框里打字时不回填 —— renderCurrent() 每次改动（包括对方那台设备
+       推过来的实时事件）都会重画这一页，不挡一下的话，她打到一半会被库里的
+       旧名字盖掉。 */
+    const input = $('st-title');
+    if (input && document.activeElement !== input) input.value = S.siteTitle || DEFAULT_TITLE;
+  }
+
+  /* 存站名。走 upsert 不走 update：万一那一行不在了（有人在 SQL 里删过），
+     update 会「改 0 行但不报错」，页面显示改好了、其实什么都没发生；
+     upsert 会把它建回来，自己就能修好。两条策略（ins/upd）setup-10 里都给了。 */
+  async function saveSiteTitle() {
+    const t = $('st-title').value.trim();
+    if (!t) { toast('名字不能是空的', true); $('st-title').focus(); return; }
+    /* 页面上 maxlength=24 已经拦了一道，这里再拦一道：绕过输入框（粘贴脚本、
+       改 HTML）时也得给一句人话，而不是把数据库的约束报错甩出去。 */
+    if (t.length > TITLE_MAX) { toast('名字最多 ' + TITLE_MAX + ' 个字', true); $('st-title').focus(); return; }
+
+    const btn = $('st-save');
+    btn.disabled = true;
+    const r = await sb.from('site').upsert({ id: true, title: t }, { onConflict: 'id' });
+    btn.disabled = false;
+    if (r.error) { toast(schemaWarn(r.error), true); return; }
+    S.siteTitle = t;
+    cacheTitle(t);        // 下次打开页面，登录页还没读库时先显示这个名字
+    applyTitle();
+    renderSiteAdmin();
+    toast('站名改好了');
   }
 
   /* ── 校训管理（「导出 / 导入」页最下面那一块）──────────────────
@@ -2974,6 +3087,7 @@
       e.target.value = '';
     });
 
+    $('st-save').addEventListener('click', saveSiteTitle);
     $('mt-add').addEventListener('click', addMotto);
     $('mt-shuffle').addEventListener('click', () => { pickMotto(true); renderMottoAdmin(); });
 
@@ -2999,11 +3113,12 @@
 
     const tables = ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources'];
     /* 新加的表还没跑 SQL 时先不订它（表都不存在，订了必错）：
-       exams 见 setup-6，mottos 见 setup-8，links 见 setup-9。
+       exams 见 setup-6，mottos 见 setup-8，links 见 setup-9，site 见 setup-10。
        刚跑完 SQL 那一次要刷新页面，订阅才会补上。 */
     if (!S.exNoTable) tables.push('exams');
     if (!S.mtNoTable) tables.push('mottos');
     if (!S.lkNoTable) tables.push('links');
+    if (!S.stNoTable) tables.push('site');
 
     const paint = () => {
       const n = tables.filter((t) => rtStatus[t]).length;
@@ -3132,6 +3247,10 @@
 
   async function boot() {
     $('view-login').hidden = false;   // 先给登录页，避免白屏
+    /* 登录页在登录**之前**就要有名字，而库里的要登录后才读得到 ——
+       先把本机记住的上次那个贴上去，没有就用默认名，别让页头空着。 */
+    S.siteTitle = cachedTitle() || DEFAULT_TITLE;
+    applyTitle();
     pickMotto();                      // 还没登录时用内置那份兜底，别让登录页空着一行
 
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {

@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>乐观者永远前行</title>
+<!-- 站名。页面加载后由 app.js 的 applyTitle() 换成库里的那个（见 setup-10-site.sql）；
+     这里写死的这份是「还没读到库」和「site 表还没建」时的兜底，
+     也是登录页在登录之前能显示的那个名字。改默认值要同时改 app.js 里的 DEFAULT_TITLE。 -->
+<title>Alano</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -14,7 +17,7 @@
     <div class="brand" aria-hidden="true">
       <span class="bdot a"></span><span class="bdot b"></span>
     </div>
-    <h1>乐观者永远前行</h1>
+    <h1 id="lg-title">Alano</h1>
     <p class="sub">两个人，各自一台设备，看到彼此的进度。</p>
     <p class="motto" id="lg-motto"></p>
 
@@ -42,7 +45,7 @@
   <header class="top">
     <button class="av me clickable" id="me-av" title="点头换头像"></button>
     <div class="grow">
-      <h1>乐观者永远前行</h1>
+      <h1 id="home-title">Alano</h1>
       <p class="sub" id="whoami">…</p>
       <p class="motto" id="home-motto"></p>
     </div>
@@ -371,6 +374,23 @@
         <input type="file" id="file-import" accept=".json,application/json" hidden>
         <span class="hint" id="import-meta" style="margin:0"></span>
       </div>
+    </div>
+    <div class="card">
+      <h2>站名</h2>
+      <p class="hint" style="margin-top:0">
+        登录页和主页顶上那个名字，浏览器标签页也跟着变。<b>两个人共用这一个</b>，改完两边都会变。
+        <span id="st-warn"></span>
+      </p>
+      <div class="row tight" style="margin-top:12px">
+        <!-- max-width 是必要的：input 默认 width:100%，不给上限它会独占一行，
+             「保存」被挤到第二行单吊着。名字最长 24 个字，260px 够用了。 -->
+        <input type="text" id="st-title" maxlength="24" placeholder="Alano" style="max-width:260px">
+        <button class="primary" id="st-save">保存</button>
+      </div>
+      <p class="hint">
+        24 个字以内，不能空着。改了名字不会动仓库和网址 ——
+        那两个在 GitHub 那边，这里改不到。
+      </p>
     </div>
     <div class="card">
       <h2>校训</h2>

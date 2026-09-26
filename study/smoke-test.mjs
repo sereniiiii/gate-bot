@@ -210,6 +210,10 @@ function qb(table) {
   };
   return o;
 }
+/* 记下订过哪些频道。「一张表一条频道」，频道名是 'study-' + 表名 ——
+   没订某张表的话，那张表改了对方那台要手动刷新才看得到，
+   而药丸上那句「已连接 · 实时同步」看不出来（少订一张也照样是「全连上了」）。 */
+const channels = [];
 globalThis.supabase = {
   createClient: () => ({
     from: (t) => qb(t),
@@ -219,7 +223,7 @@ globalThis.supabase = {
       signOut: async () => ({ error: null }),
       onAuthStateChange: () => ({ data: { subscription: { unsubscribe() {} } } }),
     },
-    channel: () => ({ on() { return this; }, subscribe(cb) { cb('SUBSCRIBED'); return this; } }),
+    channel: (name) => { channels.push(name); return { on() { return this; }, subscribe(cb) { cb('SUBSCRIBED'); return this; } }; },
     removeChannel() {},
   }),
 };
@@ -1863,6 +1867,127 @@ DB.mottos = [
 $('btn-refresh').fire('click'); await tick(); await tick();
 ok($('mt-warn').textContent === '', '表回来后提示条自己收起来');
 ok(/博学而笃志|自强不息/.test(mottoOf()), '显示切回库里那两条');
+
+/* ── 站名：登录页和主页顶上那个名字（见 setup-10-site.sql）─────
+   两条路径都要测：
+   ① site 表在 → 显示库里的名字，能改；
+   ② 表不在 → 退回写死的默认名，页面照常，只是改不了（明说去跑脚本）。
+   页面顶上那两个 h1 在假 DOM 里是自动补出来的空 div，所以「index.html 里
+   确实有这两个 id」得直接查源文件 —— 只测运行时的话，HTML 里漏了 id
+   这里照样全绿，真浏览器里却是名字永远不跟着变。 */
+console.log('── 站名：登录页与主页显示同一个名字 ──');
+const htmlSrc = fs.readFileSync(path.join(DIR, 'index.html'), 'utf8');
+ok(/<h1 id="lg-title">Alano<\/h1>/.test(htmlSrc), 'index.html 的登录页 h1 有 id="lg-title" 且默认是 Alano');
+ok(/<h1 id="home-title">Alano<\/h1>/.test(htmlSrc), 'index.html 的页头 h1 有 id="home-title" 且默认是 Alano');
+ok(/<title>Alano<\/title>/.test(htmlSrc), 'index.html 的 <title> 默认也是 Alano');
+const titleOf = () => $('home-title').textContent;
+const sameTitle = () => titleOf() === $('lg-title').textContent;
+
+/* 库里一行都没有（空表）＝ 跑完 SQL 但那一行被删过 —— 这时必须退回默认名，
+   不能显示成空字符串，那样页头就是一个空行，看着像页面坏了。 */
+DB.site = [];
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok(titleOf() === 'Alano', '空表时退回写死的默认名：' + JSON.stringify(titleOf()));
+ok(sameTitle(), '两处 h1 是同一个名字（各写各的会让同一屏里两个名字打架）');
+ok(document.title === 'Alano', '浏览器标签页标题也跟着：' + document.title);
+
+/* 库里有名字 → 三处一起变 */
+DB.site = [{ id: true, title: '两个人的自习室' }];
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok(titleOf() === '两个人的自习室', '显示**库里**那个名字，不是默认名：' + titleOf());
+ok($('lg-title').textContent === '两个人的自习室', '登录页那个 h1 也变了');
+ok(document.title === '两个人的自习室', '标签页标题也变了：' + document.title);
+ok(!/id="st-now"/.test(htmlSrc), '卡上没堆一行「现在显示的是」—— 输入框里就是当前名字，多一行是重复');
+ok(!$('st-warn').textContent.includes('setup-10-site.sql'), '表在的时候不啰嗦脚本的事：' + ($('st-warn').textContent || '(空)'));
+ok($('st-title').value === '两个人的自习室', '输入框里预填的是当前名字');
+
+/* 改名字：走 upsert（表只有一行，按主键 id 覆盖），改完三处立刻跟着变 */
+$('st-title').value = '临时·测试站名';
+$('st-save').fire('click'); await tick(); await tick();
+ok(DB.site.length === 1, '改完还是**一行** —— 没多出第二条：' + DB.site.length);
+ok(DB.site[0].title === '临时·测试站名', '新名字真的写库了');
+ok(titleOf() === '临时·测试站名' && $('lg-title').textContent === '临时·测试站名',
+  '改完两个 h1 立刻跟着变，不用刷新：' + titleOf());
+ok(document.title === '临时·测试站名', '标签页标题也跟着变了');
+
+/* 在框里打字时，刷新不能把正在打的名字盖掉（对方那台设备推实时事件 = 走同一条路） */
+$('st-title').value = '打到一半的名字';
+document.activeElement = $('st-title');
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('st-title').value === '打到一半的名字', '正在输入框里打字时，刷新不会把没打完的名字回填掉');
+ok(titleOf() === '临时·测试站名', '（但库里那个名字没被这个「打到一半」的字符串污染）');
+document.activeElement = null;
+$('st-title').value = '';
+
+/* 空名字 / 超长名字都要拦下来，别把库里的名字改坏 */
+const before = DB.site[0].title;
+$('st-title').value = '   ';
+$('st-save').fire('click'); await tick(); await tick();
+ok(DB.site[0].title === before, '名字空着（或全是空格）不写库');
+ok($('toast').textContent.includes('名字不能是空的'), '并且说清楚原因：' + $('toast').textContent);
+
+$('st-title').value = '阿'.repeat(25);
+$('st-save').fire('click'); await tick(); await tick();
+ok(DB.site[0].title === before, '超过 24 个字不写库');
+ok($('toast').textContent.includes('最多 24 个字'), '并且说清楚是长度问题：' + $('toast').textContent);
+ok(titleOf() === '临时·测试站名', '拦下来之后页面上还是原来那个名字，没被改坏');
+$('st-title').value = '';
+
+/* 表不在 → 退回默认名，页面照常，只是改不了 */
+failSelect = 'site';
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok(titleOf() === 'Alano', '表没建时退回默认名（不是空着）：' + JSON.stringify(titleOf()));
+ok(sameTitle(), '这种状态下两处也还是同一个名字');
+ok($('st-warn').textContent.includes('setup-10-site.sql'),
+  '并且明说去跑哪个脚本：' + $('st-warn').textContent);
+/* 表不在时点保存：真库那边会回一句「找不到这张表」，页面要把它翻译成
+   「去跑 setup-10」，而不是把 PostgREST 的原文甩出来。
+   （假库的 failSelect 是**一次性**的，只够让上面那次读失败；
+     这里要的是「写」失败，所以另用 failNext 塞一句真库会说的话。） */
+$('st-title').value = '表没建也想改';
+failNext = "Could not find the table 'public.site' in the schema cache";
+$('st-save').fire('click'); await tick(); await tick();
+ok(!DB.site.some((s) => s.title === '表没建也想改'), '写失败时一个字都没写进去');
+ok($('toast').textContent.includes('setup-10-site.sql'),
+  '并且把这句报错翻译成去跑哪个脚本：' + $('toast').textContent);
+ok(titleOf() === 'Alano', '页面顶上还是原来那个名字，没被改坏');
+
+/* 数据库那道长度闸门（site_title_len）报错时也要说人话。
+   ⚠️ 这条报错的原话是 `new row for relation "site" violates check constraint
+   "site_title_len"` —— 里面既有 relation 又有带引号的 site，
+   schemaWarn 里「表还没建」那条分支会把它整条吃掉。所以两条分支的
+   先后顺序是有讲究的，这里把它钉死。 */
+failNext = 'new row for relation "site" violates check constraint "site_title_len"';
+$('st-save').fire('click'); await tick(); await tick();
+ok($('toast').textContent.includes('24 个字') && !$('toast').textContent.includes('setup-10'),
+  '长度约束报错说的是长度，不是误导她去跑脚本：' + $('toast').textContent);
+$('st-title').value = '';
+
+/* 放掉钩子，恢复 */
+DB.site = [{ id: true, title: '两个人的自习室' }];
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('st-warn').textContent === '', '表回来后提示条自己收起来');
+ok(titleOf() === '两个人的自习室', '显示切回库里那个名字');
+ok(channels.includes('study-site'),
+  'site 也订了实时 —— 没订的话对方改完名字，这边要手动刷新才看得到'
+  + '（药丸上那句「已连接 · 实时同步」看不出来，少订一张也照样是全连上）：'
+  + channels.join(' '));
+
+/* 导出的快照里带上当前站名（放在顶层，不塞进 data —— site 没有 owner，
+   塞进 data 会被导入逻辑当成「对方的行」跳掉） */
+const siteSnap = (() => {
+  const orig = globalThis.Blob;
+  let text = '';
+  globalThis.Blob = class { constructor(parts) { text = String(parts[0]); } };
+  $('btn-export').fire('click');
+  globalThis.Blob = orig;
+  return JSON.parse(text);
+})();
+ok(siteSnap.site && siteSnap.site.title === '两个人的自习室',
+  '导出的快照顶层记了当前站名：' + JSON.stringify(siteSnap.site));
+ok(siteSnap.backend.tables.includes('site'), 'backend.tables 里有 site');
+ok(/setup-10-site\.sql/.test(siteSnap.backend.schema_sql), 'schema_sql 列到了 setup-10-site.sql');
+ok(!('site' in siteSnap.data), 'site 不在 data 里（否则导入会报告「跳过 1 行·属于对方」）');
 
 console.log('── CSS：[hidden] 必须是硬开关 ──');
 /* 回归测试：登录成功后登录页没消失、直接盖住主页。
