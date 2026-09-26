@@ -148,6 +148,9 @@ const TEXT_ON = [
   ['.rg-head .rg-n', '--page', '学科组头右边那个「N 个」'],
   ['.rk-head', '--page', '资源列表的类型小组名（色点旁边那行）'],
   ['.rk-head .rk-n', '--page', '类型小组右边那个个数'],
+  /* ⚠️ 这条只保证 placeholder 用的 token 是 --muted、不是更浅的（换成别的 token 会红）；
+     它**测不到** opacity —— 半透明是脚本算不出来的，那一层只能说好别加（见 app.css 里的注释）。 */
+  ['.item .inline::placeholder', '--page', '就地编辑框里那句灰色提示（只保证 token 是 --muted）'],
 ];
 const noComment = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
 /* 取某个选择器块里 color:var(--x) 的 token 名 */

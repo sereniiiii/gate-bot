@@ -131,9 +131,8 @@
        cdNoCol = 库里还没有 due_date 那一列时置位（setup-7 跑之前）。 */
     cdNoCol: false,
     cdEdit: null,         // 正在改的那条倒计时的 id，null = 上面那个表单是「新建」
-    /* 学习资源：正在改的那一行的 id，null = 上面那个表单是「新建」。
-       跟倒计时 / 考试成绩同一套做法（点「改」把这一条填回表单，不是就地编辑）。 */
-    resEdit: null,
+    /* 学习资源**没有**编辑态 —— 名称 / 平台 / 学科就是卡片上的输入框，
+       改完失焦自动存（见 resRow 里的 patch）。上面那张表单只管新建。 */
     /* 校训。两个人的共同装饰，不按 owner 分（见 setup-8-mottos.sql）。
        mtNoTable = 表还没建，这时用内置的 MWORDS 兜底显示，只是改不了。
        mtEdit    正在改的那一条的 id，null = 没在改 */
@@ -2089,23 +2088,62 @@
     });
   }
 
-  /* 一行资源。抽出来是因为它现在要挂在「学科 → 类型」两层里 ——
-     内容跟以前一样，只是**不再重复标类型**（小组头已经写了）。
-     正在改的那一行加 .editing，一眼看得出表单里编辑的是哪一条。 */
+  /* 一行资源。抽出来是因为它现在要挂在「学科 → 类型」两层里。
+     **字段就地可编辑**：名称 / 平台 / 学科本身就是输入框，点一下就能改，
+     改完点别处自动存；类型和状态是下拉。没有「改」那个中转按钮 —— 资源一多，
+     「点改 → 滚回上面找表单 → 填 → 保存」这一圈太绕，直接在原地改就行。
+     对方那一栏永远是只读文本（RLS 也只让改自己的行）。 */
   function resRow(r, mine) {
     /* 这一本书 / 这门课被拆成几章、完成到哪了。章就是 subtasks，
        和「今天完成情况」勾的是同一批行 —— 那边勾一下，这里立刻亮一段。 */
     const subs = subsOfRes(r.id);
     const dn = subs.filter((x) => x.done).length;
     const pp = subs.length ? pct(dn, subs.length) : 0;
-    const editing = S.resEdit === r.id;
 
-    return h('div', { class: 'item' + (editing ? ' editing' : '') },
+    /* 就地改一个字段：先把本地那份改了再写库 —— 写失败时 quiet() 会 refresh
+       把真值拉回来，不会留下「界面上改了、库里没改」的假象。
+       needRedraw：名称 / 类型 / 学科决定这条排在哪一组，得重画；
+       平台和状态不影响分组，重画反而会把光标从输入框里踢出去。 */
+    const patch = (fields, needRedraw) => {
+      Object.assign(r, fields);
+      quiet(sb.from('resources').update(fields).eq('id', r.id)).then((done) => {
+        if (!done) return;                 // 失败时 quiet 已经报了错、还把真值拉了回来
+        if (needRedraw) renderRes();
+        /* 就地改没有「保存」那一下，不说一声她不知道到底存上没有 */
+        toast('已保存');
+      });
+    };
+    const textLine = (key, placeholder, needRedraw) => h('input', {
+      class: 'inline', type: 'text', value: r[key] || '', placeholder: placeholder,
+      title: '点一下就能改，改完点别处自动存',
+      onchange: (e) => {
+        const v = e.target.value.trim();
+        /* 名称不能空着 —— 空名字在列表上就是一条看不见的东西。
+           不写库，把卡片重画回原值，并说一句为什么。 */
+        if (!v && key === 'name') { toast('名字不能空着', true); renderRes(); return; }
+        if (v === (r[key] || '')) return;
+        patch({ [key]: v }, needRedraw);
+      },
+    });
+    /* 库里 kind 是脏值的行，下拉里得有个对得上的选项，不然会显示成「工具书」骗人 */
+    const kindOpts = KINDS.map((k) =>
+      h('option', { value: k.key, text: k.label, selected: r.kind === k.key }));
+    if (!KIND_LABEL[r.kind]) kindOpts.push(h('option', { value: r.kind, text: '其他', selected: true }));
+
+    return h('div', { class: 'item' },
       h('div', { class: 't' },
-        h('span', { class: 'grow', text: r.name })
+        mine ? textLine('name', '名称', true)
+             : h('span', { class: 'grow', text: r.name })
       ),
-      (r.platform || r.subject) ? h('div', { class: 'd' },
-        [r.platform, r.subject].filter(Boolean).join(' · ')) : null,
+      /* 提示文字就两个字。写「平台（B站 / Coursera…）」这种长句，那个框空着时
+         半行都是灰字，看着像内容 —— 长的那份放进 title。两个框之间也不加「·」：
+         空值时它会变成夹在中间的一个孤儿，而且两个框各自悬停会浮出边框，
+         本来就有分隔感。 */
+      mine ? h('div', { class: 'd two' },
+          textLine('platform', '平台', false),
+          textLine('subject', '学科', true))
+        : ((r.platform || r.subject) ? h('div', { class: 'd' },
+            [r.platform, r.subject].filter(Boolean).join(' · ')) : null),
       subs.length ? h('div', { class: 'bar seg' },
         subs.map((x, i) => h('i', {
           class: 'sq' + (x.done ? ' on' : ''),
@@ -2127,26 +2165,25 @@
           title: '把这本书 / 这门课拆成章节，就能一章一章勾进度',
           onclick: () => addChapter(r, subs),
         })) : null),
-      mine ? h('div', { class: 'm' },
+      /* 类型和状态放同一行，都在卡片上直接改。
+         卡片上的类型下拉跟上面那个小组头是重复的 —— 但改它就会换组，
+         这个反馈比「去别处改」直观，留着。 */
+      mine ? h('div', { class: 'm two' },
+        h('span', { text: '类型' }),
+        h('select', {
+          style: { maxWidth: '96px' },
+          onchange: (e) => patch({ kind: e.target.value }, true),
+        }, kindOpts),
         h('span', { text: '状态' }),
         h('select', {
-          style: { maxWidth: '130px' },
-          onchange: async (e) => {
-            r.status = e.target.value;
-            await quiet(sb.from('resources').update({ status: r.status }).eq('id', r.id));
-          },
+          style: { maxWidth: '96px' },
+          onchange: (e) => patch({ status: e.target.value }, false),
         }, Object.keys(STATUS_LABEL).map((k) =>
           h('option', { value: k, text: STATUS_LABEL[k], selected: r.status === k })))
       ) : h('div', { class: 'm' },
         h('span', { class: 'pill' + (r.status === 'done' ? ' ok' : ''), text: STATUS_LABEL[r.status] || r.status })
       ),
       mine ? h('div', { class: 'acts' },
-        h('button', {
-          class: 'tiny', text: editing ? '正在改' : '改',
-          disabled: editing ? true : null,
-          title: '把这个资源的名称 / 类型 / 平台 / 学科填回上面的表单',
-          onclick: () => editRes(r),
-        }),
         h('button', {
           class: 'tiny danger', text: '删除',
           onclick: () => removeRow('resources', r.id, '资源「' + r.name + '」'),
@@ -2155,51 +2192,22 @@
     );
   }
 
-  /* 关掉编辑态、把上面那张表单清回「新建」的样子 */
+  /* 把上面那张表单清回「新建」的样子。
+     它现在只管新建 —— 改是在卡片上就地改的（见 resRow），没有编辑态。 */
   function resetResForm() {
-    S.resEdit = null;
     $('r-name').value = '';
     $('r-platform').value = '';
     $('r-subject').value = '';
     $('r-chapters').value = '';
-    $('r-add').textContent = '添加';
-    $('r-cancel').hidden = true;
-    $('r-chapters-box').hidden = false;
   }
 
-  /* 「改」是把这一条填回上面那张表单，**不是就地编辑** ——
-     跟倒计时 / 考试成绩同一套做法，三个页面手感一致（她已经在用那套了）。
-     S.resEdit 为 null 就是新建，按钮文案两个状态。 */
-  function editRes(r) {
-    S.resEdit = r.id;
-    $('r-kind').value     = r.kind || 'book';
-    $('r-name').value     = r.name || '';
-    $('r-platform').value = r.platform || '';
-    $('r-subject').value  = r.subject || '';
-    $('r-status').value   = r.status || 'todo';
-    $('r-add').textContent = '保存修改';
-    $('r-cancel').hidden = false;
-    /* 「共几章」只在新建时有意义：改少了要删她的行、改多了要凭空造行，
-       两个都不该顺手做。章节归那一行上的「＋ 分章」管。 */
-    $('r-chapters-box').hidden = true;
-    /* 表单在列表上面，列表长的时候点了「改」看不见它 —— 滚上去 */
-    $('r-name').scrollIntoView({ block: 'center', behavior: 'smooth' });
-    $('r-name').focus();
-    /* 重画列表：那一行要立刻变成 .editing（描边 + 按钮说「正在改」）。
-       不重画的话，点「改」在界面上**看不出任何变化** —— 光改 S.resEdit 是不够的。 */
-    renderRes();
-  }
-
-  /* 加一条资源；正在改的时候同一个按钮 = 保存修改。
-     跟倒计时 / 考试成绩同一套：`S.resEdit` 为 null 就是新建。 */
+  /* 加一条资源。改走的是卡片上的就地编辑，这个按钮只管新建。 */
   async function addRes() {
     const name = $('r-name').value.trim();
     if (!name) { toast('先写名称', true); $('r-name').focus(); return; }
     const btn = $('r-add');
-    const editing = S.resEdit;
-    /* 改的时候**只动这几个字段**，不碰 owner / url / created_at。
-       「共几章」也不在这儿管 —— 章节是 subtasks，归那一行上的「＋ 分章」，
-       而且改少了要删她的行、改多了要凭空造行，两个都不该顺手做。 */
+    /* 新建时「共几章」只能在这儿填（一次生成好，省得进去点 n 次「＋ 加一章」）；
+       改章数不在这儿管 —— 那是卡片上「＋ 分章」的事。 */
     const fields = {
       kind: $('r-kind').value, name: name,
       platform: $('r-platform').value.trim(), subject: $('r-subject').value.trim(),
@@ -2207,16 +2215,6 @@
     };
 
     btn.disabled = true;
-
-    if (editing) {
-      const { error } = await sb.from('resources').update(fields).eq('id', editing);
-      btn.disabled = false;
-      if (error) { toast(error.message, true); return; }
-      resetResForm();
-      toast('已保存');
-      await refresh();
-      return;
-    }
 
     /* .select().single() 是为了拿回新行的 id —— 要拿它去建章节 */
     const { data, error } = await sb.from('resources')
@@ -2256,10 +2254,6 @@
     const all = S.resources;
     const scoped = all.filter(inScope);
     const n = (k) => scoped.filter((r) => r.kind === k).length;
-
-    /* 正在改的那条被别人删了（另一台设备 / 另一个页签）→ 表单退回「新建」。
-       不兜的话按「保存修改」会 update 到 0 行，看着像保存成功了、其实什么也没发生。 */
-    if (S.resEdit && !all.some((r) => r.id === S.resEdit)) resetResForm();
 
     $('res-tiles') && clear($('res-tiles'));
     $('res-tiles').appendChild(tile('资源总数', scoped.length));
@@ -3255,8 +3249,6 @@
     });
 
     $('r-add').addEventListener('click', addRes);
-    /* 取消也要重画 —— 不然那一行还留着 .editing 的描边和「正在改」，跟表单已经清空的状态对不上 */
-    $('r-cancel').addEventListener('click', () => { resetResForm(); renderRes(); toast('没改，表单已清空'); });
 
     /* 考试成绩：一次记一场。改的时候同一个按钮变成保存。 */
     $('ex-add').addEventListener('click', addExam);

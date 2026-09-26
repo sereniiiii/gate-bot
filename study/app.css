@@ -175,8 +175,21 @@ button:focus-visible,summary:focus-visible,.tab:focus-visible,.chip:focus-visibl
 /* 卡片往右缩一格 —— 缩进本身就是「它属于上面那个类型」的信号 */
 .res-kind .item{margin-left:14px}
 .res-kind .item:last-child{margin-bottom:0}
-/* 正在改的那一条：蓝色描边，跟上面那张表单里填的内容对得起来 */
-.item.editing{border-color:var(--series-1)}
+/* ── 就地编辑：卡片上的字段本身就是输入框（2026-09-26）────────────
+   平时看着就是文字（边框透明、背景透明），鼠标移上去才透出「这里能改」，
+   点进去才是一副输入框的样子。不加这一层，一屏资源全是框框，比原来还乱。
+   padding 恒定 2px/4px 不带负 margin —— 聚焦时不改变盒子的尺寸，
+   相邻那块不会跟着抖一下。 */
+.item .inline{flex:1;min-width:0;font:inherit;color:inherit;
+  padding:2px 4px;border:1px solid transparent;border-radius:7px;background:transparent}
+/* 提示文字不加 opacity —— 半透明会把对比度压到 4.5 以下（--muted 本身就是灰的，
+   跟真值已经分得很开，不需要再淡一层）。 */
+.item .inline::placeholder{color:var(--muted)}
+.item .inline:hover{border-color:var(--border)}
+.item .inline:focus{border-color:var(--series-1);background:var(--surface-1);outline:none}
+/* 平台 · 学科 横排一行；类型 · 状态下拉横排一行 */
+.item .d.two{display:flex;align-items:center;gap:8px}
+.item .m.two{flex-wrap:nowrap;gap:6px}
 /* 倒计时列表里「待办 / 已完成」之间那道分隔 */
 .cd-sep{font-size:11px;font-weight:650;color:var(--muted);margin:12px 0 8px;
   padding-top:9px;border-top:1px solid var(--border)}

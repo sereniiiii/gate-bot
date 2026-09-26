@@ -241,6 +241,25 @@ const find = (root, pred) => findAll(root, pred)[0] || null;
 const btns = (root, label) => findAll(root, (n) => n.tagName === 'BUTTON' && n.textContent.trim() === label);
 const inputs = (root) => findAll(root, (n) => n.tagName === 'INPUT' && n.type === 'text').map((n) => n.value);
 
+/* 资源卡片上的名称现在是**输入框**（就地可编辑，见 resRow），名字不在
+   textContent 里 —— 按名字找那一行得看 input 的 value。 */
+const byResName = (name) => find($('res-cols'), (n) => hasCls(n, 'item') && inputs(n).includes(name));
+/* 断言 toast 之前先清一下。toast 那个节点是常驻的，文案会一直留到下一次
+   （2600ms 的自动隐藏在这次运行里根本来不及触发）—— 不清的话，上一条的
+   「已保存」能冒充这一条的，报错也好、成功也好都测不出来。 */
+const clearToast = () => { $('toast').textContent = ''; };
+/* 一张资源卡上那几件可以就地改的东西。必须**从对应的那一小块里取**：
+   整张卡连同下面的章节行一起 walk 的话，章节行里的输入框和「↔」下拉都会捞进来。 */
+const resNameInput  = (card) => { const t = card && byCls(card, 't')[0]; return (t && findAll(t, (n) => n.tagName === 'INPUT')[0]) || null; };
+const resTextInputs = (card) => { const d = card && byCls(card, 'two').find((n) => hasCls(n, 'd')); return d ? findAll(d, (n) => n.tagName === 'INPUT') : []; };
+const resSelects    = (card) => { const m = card && byCls(card, 'two').find((n) => hasCls(n, 'm')); return m ? findAll(m, (n) => n.tagName === 'SELECT') : []; };
+/* 读下拉当前选中的那一项。真浏览器里 `select.value` 会跟着 `<option selected>` 走，
+   假 DOM 不会（h() 遇到 `'selected' in El` 为假 → 走 setAttribute），所以两个都认。 */
+const selVal = (sel) => {
+  const o = findAll(sel, (n) => n.tagName === 'OPTION' && (n.selected === true || n.getAttribute('selected') != null))[0];
+  return o ? o.value : '';
+};
+
 /* 「今日完成情况」的选择器 2026-09-26 改成了**父项、子项都是多选**，而且勾上父项
    **不会**替她预勾子项（勾哪几步 / 哪几章得自己点）。开还是关会跟着前面的用例变，
    写死「点一下就能选中」太脆 —— 一律按状态点：
@@ -1043,8 +1062,7 @@ console.log('── 学习资源：拆成章节 + 一章一章勾 ──');
 ok(/id="r-chapters"/.test(html), 'index.html 里加了「共几章」输入框');
 tabs[4].fire('click'); await tick();          // res
 /* 刚建好的资源没有章节，这时不该凭空出现进度条 */
-const r1item = findAll($('res-cols'), (n) => hasCls(n, 'item'))
-  .find((n) => n.textContent.includes('线性代数应该这样学'));
+const r1item = byResName('线性代数应该这样学');
 ok(!!r1item, '找得到 r1 这张卡片');
 ok(findAll(r1item, (n) => hasCls(n, 'seg')).length === 0, '还没分章时不出进度条（不给假进度）');
 ok(!!btns(r1item, '＋ 分章').length, '给一个「＋ 分章」入口');
@@ -1057,18 +1075,15 @@ ok(ch1[0].title === '第 1 章', '默认给个「第 1 章」当占位，不用�
 ok(ch1[0].owner === ME, 'owner 是我');
 
 /* 再点两下 → 三章，序号要接下去而不是重排 */
-const r1item2 = findAll($('res-cols'), (n) => hasCls(n, 'item'))
-  .find((n) => n.textContent.includes('线性代数应该这样学'));
+const r1item2 = byResName('线性代数应该这样学');
 btns(r1item2, '＋ 加一章')[0].fire('click'); await tick(); await tick();
-const r1item3 = findAll($('res-cols'), (n) => hasCls(n, 'item'))
-  .find((n) => n.textContent.includes('线性代数应该这样学'));
+const r1item3 = byResName('线性代数应该这样学');
 btns(r1item3, '＋ 加一章')[0].fire('click'); await tick(); await tick();
 const chAll = DB.subtasks.filter((x) => x.resource_id === 'r1');
 ok(chAll.length === 3, '三章，实际 ' + chAll.length);
 ok(chAll.map((x) => x.seq).join(',') === '1,2,3', '序号依次递增，没重排已有的：' + chAll.map((x) => x.seq).join(','));
 
-const r1final = findAll($('res-cols'), (n) => hasCls(n, 'item'))
-  .find((n) => n.textContent.includes('线性代数应该这样学'));
+const r1final = byResName('线性代数应该这样学');
 const chSegs = findAll(r1final, (n) => hasCls(n, 'sq'));
 ok(chSegs.length === 3, '进度条按章分段，3 章 3 段，实际 ' + chSegs.length);
 ok(chSegs.every((x) => !hasCls(x, 'on')), '一章没勾时全是暗的');
@@ -1121,8 +1136,7 @@ ok(ch1row.done_at === at1, '时间戳没有被改写');
 
 console.log('── 同步：资源的章节进度条 / 列表 / 动态流 ──');
 tabs[4].fire('click'); await tick();          // res
-const r1done = findAll($('res-cols'), (n) => hasCls(n, 'item'))
-  .find((n) => n.textContent.includes('线性代数应该这样学'));
+const r1done = byResName('线性代数应该这样学');
 ok(findAll(r1done, (n) => hasCls(n, 'sq')).filter((x) => hasCls(x, 'on')).length === 1,
   '资源进度条亮了 1 段');
 ok(findAll(r1done, (n) => hasCls(n, 'sq')).length === 3,
@@ -1287,8 +1301,7 @@ c2r.done = false; c2r.done_at = null;
 $('btn-refresh').fire('click'); await tick();
 
 tabs[4].fire('click'); await tick();          // res
-const r1card = findAll($('res-cols'), (n) => hasCls(n, 'item'))
-  .find((n) => n.textContent.includes('线性代数应该这样学'));
+const r1card = byResName('线性代数应该这样学');
 const chRow2 = subRowOf(r1card, '第 2 章');
 ok(!!chRow2, '书的章节行也在（同一个 subRow 渲染的）');
 ok(!!rowSel(chRow2), '这一章也有那条「↔」');
@@ -1300,8 +1313,7 @@ tabs[1].fire('click'); await tick();
 const dBefore = Number(dcOf(now.getDate()) || 0);
 tabs[4].fire('click'); await tick();
 
-rowBox(subRowOf(findAll($('res-cols'), (n) => hasCls(n, 'item'))
-  .find((n) => n.textContent.includes('线性代数应该这样学')), '第 2 章'))
+rowBox(subRowOf(byResName('线性代数应该这样学'), '第 2 章'))
   .fire('change', { target: { checked: true } });
 await tick(); await tick();
 
@@ -1319,8 +1331,7 @@ ok(Number(dcOf(now.getDate()) || 0) === dBefore + 1,
 tabs[0].fire('click'); await tick();          // home
 const feedN = ($('feed').textContent.match(/完成章节|完成小任务/g) || []).length;
 tabs[4].fire('click'); await tick();
-rowBox(subRowOf(findAll($('res-cols'), (n) => hasCls(n, 'item'))
-  .find((n) => n.textContent.includes('线性代数应该这样学')), '第 2 章'))
+rowBox(subRowOf(byResName('线性代数应该这样学'), '第 2 章'))
   .fire('change', { target: { checked: false } });
 await tick(); await tick();
 ok(c2r.done === false && s2r.done === false && c1r.done === false,
@@ -1407,8 +1418,7 @@ ok(s3r.link_id == null && c1r.link_id == null,
 /* ── 删掉一条，挂着它的关联要一起清 ── */
 const nLinksBeforeDel = DB.links.length;
 tabs[4].fire('click'); await tick();
-btns(subRowOf(findAll($('res-cols'), (n) => hasCls(n, 'item'))
-  .find((n) => n.textContent.includes('线性代数应该这样学')), '第 2 章'), '✕')[0].fire('click');
+btns(subRowOf(byResName('线性代数应该这样学'), '第 2 章'), '✕')[0].fire('click');
 await tick(); await tick();
 ok(!DB.subtasks.some((x) => x.id === c2r.id), '第 2 章删掉了');
 ok(DB.links.length === nLinksBeforeDel - 1,
@@ -1455,8 +1465,7 @@ for (let i = DB.subtasks.length - 1; i >= 0; i--) if (DB.subtasks[i].resource_id
 $('btn-refresh').fire('click'); await tick();
 failNext = 'column "resource_id" of relation "subtasks" does not exist';
 tabs[4].fire('click'); await tick();
-const r1noch = findAll($('res-cols'), (n) => hasCls(n, 'item'))
-  .find((n) => n.textContent.includes('线性代数应该这样学'));
+const r1noch = byResName('线性代数应该这样学');
 btns(r1noch, '＋ 分章')[0].fire('click'); await tick(); await tick();
 ok($('toast').textContent.includes('setup-4-chapters.sql'),
   '分章失败被翻译成「去跑哪个脚本」，而不是把 Postgres 原文甩给她：' + $('toast').textContent);
@@ -2166,76 +2175,161 @@ ok(kNames(unc).join('|') === '其他',
 const othDot = findAll(unc, (n) => hasCls(n, 'kdot'))[0];
 ok(!!othDot && String(othDot.style.background).includes('--muted'),
   '「其他」用中性色，不占用那三个正经类型的颜色：' + (othDot ? othDot.style.background : '(没有)'));
+/* 这条脏 kind 的行，卡片上那个就地改类型的小下拉也得给它一个对得上的项 ——
+   下拉里没有它，浏览器就会把第一项（工具书）顶上来，看着像她填过一样。 */
+const dirtySel = resSelects(findAll(unc, (n) => hasCls(n, 'item'))[0])[0];
+ok(!!dirtySel && selVal(dirtySel) === 'weird' && dirtySel.textContent.includes('其他'),
+  '库里 kind 是脏值的那条，类型下拉里也兜一个「其他」给它：'
+  + (dirtySel ? selVal(dirtySel) + ' / ' + dirtySel.textContent : '(没有下拉)'));
 
 DB.resources.length = 0;
 keepResForGroup.forEach((r) => DB.resources.push(r));
 $('btn-refresh').fire('click'); await tick(); await tick();
 ok(rGroups().length === 2, '还回去之后恢复成 2 组（临时那两条没留在库里）：' + rGroups().map(gName).join(' / '));
 
-console.log('── 学习资源：已添加的也能接着改（回填表单那一套）──');
-const resRowOf = (name) => findAll($('res-cols'), (n) => hasCls(n, 'item') && n.textContent.includes(name))[0];
-const cancelBtn = () => $('r-cancel');
+console.log('── 学习资源：在卡片上就地改（没有「改」按钮那一套）──');
 
-btns(resRowOf('线性代数应该这样学'), '改')[0].fire('click'); await tick();
-ok($('r-name').value === '线性代数应该这样学', '点「改」把名称填回了上面的表单：' + $('r-name').value);
-ok($('r-subject').value === '数学' && $('r-platform').value === '',
-  '学科 / 平台也一并填回去（改的时候能改，分组跟着变）');
-ok($('r-kind').value === 'book', '类型也填回去了 —— 它决定列表分到哪个小组');
-ok($('r-add').textContent === '保存修改', '按钮文案换成两个状态里的第二个：' + $('r-add').textContent);
-ok(cancelBtn().hidden === false, '旁边冒出「取消」，改一半能反悔');
-ok($('r-chapters-box').hidden === true,
-  '「共几章」在改的时候藏起来 —— 改少了要删她的行、改多了要凭空造行，两个都不该顺手做');
-ok(hasCls(resRowOf('线性代数应该这样学'), 'editing'),
-  '正在改的那一行加了 .editing，一眼看得出表单里编辑的是哪一条');
-const beingEdited = btns(resRowOf('线性代数应该这样学'), '正在改')[0];
-ok(!!beingEdited && beingEdited.disabled === true,
-  '那一行自己的按钮变禁用，不会被点两次');
+/* 她的原话：「可以不要用"改"字吗，直接在对应已经添加的部分编辑就行了吧」。
+   先把这条钉死 —— 资源列表里不该再有「改」这个按钮，上面那张表单也不该再有
+   「取消」：它只管新建，没有「改一半反悔」这回事了。 */
+ok(btns($('res-cols'), '改').length === 0, '资源列表里没有「改」这个按钮了');
+/* 别用 $('r-cancel') 判 —— 假 DOM 的 getElementById 会把缺的元素凭空造出来，
+   永远为真。查静态结构只能直接读 index.html。 */
+ok(!/id="r-cancel"/.test(htmlSrc), '上面那张表单的「取消」也一起删了，html 里都没有它');
 
-/* 改一半刷新（对方推来的实时事件也走这条路）：编辑态不能丢 */
-$('btn-refresh').fire('click'); await tick(); await tick();
-ok($('r-add').textContent === '保存修改' && $('r-name').value === '线性代数应该这样学',
-  '改到一半来一次刷新，编辑态和填好的内容都还在');
+const r1CardIn = byResName('线性代数应该这样学');
+ok(!!r1CardIn, 'r1 那张卡片还在');
+const nameIn = resNameInput(r1CardIn);
+const [platIn, subjIn] = resTextInputs(r1CardIn);
+ok(!!nameIn && hasCls(nameIn, 'inline'), '名称本身**就是**个输入框，不是「点一下才变出来」的');
+ok(nameIn.value === '线性代数应该这样学', '框里就是库里那个名字：' + nameIn.value);
+ok(String(nameIn.title).includes('点一下就能改'), '移上去有一句告诉她这儿能改：' + nameIn.title);
+ok(platIn.value === '' && subjIn.value === '数学',
+  '平台 / 学科同样是输入框，值是库里的：' + JSON.stringify([platIn.value, subjIn.value]));
+/* 空着时那句灰字只能有两个字。写成长句（「平台（B站 / Coursera…）」）会把
+   半个框填满灰字，看着像她已经填了内容；截图核对时就是这么发现的。
+   读 getAttribute 不读 .placeholder —— 假 DOM 的 El 没声明这个属性，
+   h() 于是走了 setAttribute 那条路（真浏览器里两条都能读到）。 */
+const ph = (n) => (n ? n.getAttribute('placeholder') : null);
+ok(ph(platIn) === '平台' && ph(subjIn) === '学科' && ph(resNameInput(r1CardIn)) === '名称',
+  '空着时的提示就两个字，不写长句：'
+  + [ph(resNameInput(r1CardIn)), ph(platIn), ph(subjIn)].join(' / '));
+ok(!byCls(r1CardIn, 'sep').length, '两个框之间不加「·」—— 空值时那是夹在中间的一个孤儿');
 
+const [kindSel, statSel] = resSelects(r1CardIn);
+ok(selVal(kindSel) === 'book' && selVal(statSel) === 'doing',
+  '类型 / 状态是就地下拉，选中的就是库里那个值：' + selVal(kindSel) + ' / ' + selVal(statSel));
+ok(kindSel.textContent.includes('工具书'),
+  '下拉里写的是中文标签，不是 book 这种内部值：' + kindSel.textContent);
+
+/* 改名字：失焦（change）就自动写库。先记下库里那行，改完对一遍。 */
 const r1Idx = DB.resources.findIndex((r) => r.id === 'r1');
 const keepR1 = Object.assign({}, DB.resources[r1Idx]);
-$('r-name').value = '线性代数（改过名）';
-$('r-platform').value = '图书馆';
-$('r-add').fire('click'); await tick(); await tick();
+clearToast();
+nameIn.value = '线性代数（改过名）';
+nameIn.fire('change', { target: { value: nameIn.value } });
+await tick(); await tick();
 const r1Now = DB.resources.find((r) => r.id === 'r1');
-ok(r1Now.name === '线性代数（改过名）' && r1Now.platform === '图书馆',
-  '保存修改真的写库了：' + r1Now.name + ' / ' + r1Now.platform);
+ok(r1Now.name === '线性代数（改过名）', '改完名字自动写库：' + r1Now.name);
 ok(DB.resources.length === 5 && DB.resources.filter((r) => r.id === 'r1').length === 1,
   '走的是 update 不是 insert —— 没多出一行：' + DB.resources.length + ' 条');
 ok(r1Now.owner === ME && r1Now.created_at === keepR1.created_at,
-  'owner 和 created_at 一个字都没动（改的时候不该碰这两列）');
-ok($('r-add').textContent === '添加' && $('r-name').value === ''
-   && cancelBtn().hidden === true && $('r-chapters-box').hidden === false,
-  '存完表单自己清回「新建」的样子，「共几章」也回来了');
-ok(!hasCls(resRowOf('线性代数（改过名）'), 'editing'), '那一行也不再是编辑态');
-ok($('toast').textContent.includes('已保存'), '并且回一句「已保存」：' + $('toast').textContent);
+  'owner 和 created_at 一个字都没碰（就地改也不该碰这两列）');
+ok($('toast').textContent.includes('已保存'),
+  '存完说一声「已保存」—— 没有按按钮那一下，不说她不知道到底存上没有：' + $('toast').textContent);
+ok(byResName('线性代数（改过名）') !== r1CardIn && byResName('线性代数应该这样学') === null,
+  '名字决定这条排在哪一组，所以改完重画了一次；旧名字那张卡已经不在列表上了');
 
-btns(resRowOf('线性代数（改过名）'), '改')[0].fire('click'); await tick();
-$('r-name').value = '这个不该被存进去';
-cancelBtn().fire('click'); await tick(); await tick();
-ok(!DB.resources.some((r) => r.name === '这个不该被存进去'), '点「取消」一个字都不写库');
-ok($('r-name').value === '' && $('r-add').textContent === '添加' && cancelBtn().hidden === true
-   && $('r-chapters-box').hidden === false && !hasCls(resRowOf('线性代数（改过名）'), 'editing'),
-  '取消之后表单清空、按钮回「添加」、取消自己收起来、那一行也不是编辑态了');
+/* 学科决定分组 —— 换学科要立刻换组，且不用她手动刷新。 */
+const subjIn2 = resTextInputs(byResName('线性代数（改过名）'))[1];
+subjIn2.value = '高等数学';
+subjIn2.fire('change', { target: { value: subjIn2.value } });
+await tick(); await tick();
+ok(DB.resources.find((r) => r.id === 'r1').subject === '高等数学', '改学科也自动写库');
+ok(!!rGroups().find((g) => gName(g) === '高等数学'),
+  '换了学科立刻自己成一组，不用刷新：' + rGroups().map(gName).join(' / '));
 
-/* 正在改的那条被别人删了（另一台设备 / 另一个页签）→ 表单必须退回「新建」。
-   不兜的话按「保存修改」会 update 到 0 行，看着像保存成功了、其实什么也没发生。 */
-btns(resRowOf('线性代数（改过名）'), '改')[0].fire('click'); await tick();
-const r1Gone = DB.resources.splice(r1Idx, 1)[0];
+/* 平台不决定分组 —— 所以**不重画**：重画会把光标从输入框里踢出去，
+   她正打到一半的字就没了。这条盯的是「同一个 DOM 节点还在」，不是文案。 */
+const card3 = byResName('线性代数（改过名）');
+const platIn3 = resTextInputs(card3)[0];
+platIn3.value = '图书馆';
+platIn3.fire('change', { target: { value: platIn3.value } });
+await tick(); await tick();
+ok(DB.resources.find((r) => r.id === 'r1').platform === '图书馆', '改平台也写库了');
+ok(resTextInputs(byResName('线性代数（改过名）'))[0] === platIn3,
+  '平台不决定分组 → 不重画，她接着打第二个字时光标还在原来那个框里');
+
+/* 名字不能空 —— 空名字在列表上就是一条看不见的东西。 */
+const nameIn4 = resNameInput(byResName('线性代数（改过名）'));
+clearToast();
+nameIn4.value = '   ';
+nameIn4.fire('change', { target: { value: nameIn4.value } });
+await tick(); await tick();
+ok(DB.resources.find((r) => r.id === 'r1').name === '线性代数（改过名）',
+  '名字清空一个字节都不写库');
+/* 先断「这一行还在」再读框里的值 —— 不重画的话按名字根本找不到这一行，
+   直接读 .value 会抛异常把整轮跑挂掉，那就看不清是哪儿错了。 */
+const card4 = byResName('线性代数（改过名）');
+ok(!!card4, '名字没被写空，那一行还在（按名字还找得着）');
+ok(!!card4 && resNameInput(card4).value === '线性代数（改过名）',
+  '框里也弹回原来的名字 —— 不留一个空框在那儿骗人');
+ok($('toast').textContent.includes('不能空着'), '并且说清楚为什么没给存：' + $('toast').textContent);
+
+/* 换个类型 → 换小组。「相同科目分在一起、再按类型细分」那条的延伸。 */
+const kindSel5 = resSelects(byResName('线性代数（改过名）'))[0];
+kindSel5.value = 'course';
+kindSel5.fire('change', { target: { value: 'course' } });
+await tick(); await tick();
+ok(DB.resources.find((r) => r.id === 'r1').kind === 'course', '下拉换类型也写库');
+const adv = rGroups().find((g) => gName(g) === '高等数学');
+ok(!!adv && kNames(adv).join('|') === '网课',
+  '换成网课后，它那一组的小节头跟着变成「网课」：' + (adv ? kNames(adv).join('|') : '(没有高等数学组)'));
+
+/* 状态不影响分组，同样不重画。 */
+const statSel6card = byResName('线性代数（改过名）');
+const statSel6 = resSelects(statSel6card)[1];
+statSel6.value = 'done';
+statSel6.fire('change', { target: { value: 'done' } });
+await tick(); await tick();
+ok(DB.resources.find((r) => r.id === 'r1').status === 'done', '状态也能就地改');
+ok(resSelects(byResName('线性代数（改过名）'))[1] === statSel6,
+  '状态不决定分组 → 也不重画，刚点过的下拉不会被重画掉');
+
+/* 对方那一栏永远只有只读文字 —— 就地编辑不能把这条破掉。 */
+const othCol = findAll($('res-cols'), (n) => hasCls(n, 'who') && !hasCls(n, 'me'))[0];
+ok(!!othCol && othCol.textContent.includes('考研政治'), '对方那一栏还在');
+ok(!findAll(othCol, (n) => n.tagName === 'INPUT' || n.tagName === 'SELECT').length,
+  '对方那栏一个输入框 / 下拉都没有 —— 就地编辑只在「我」这边开');
+ok(!!findAll(othCol, (n) => hasCls(n, 'pill'))[0], '对方的状态还是那个小圆标，不是能点的下拉');
+
+/* 写失败：quiet() 报错 + 把真值拉回来，不留「界面上改了、库里没改」的假象。
+   ⚠️ 假库 select 返回的是**同一批对象引用**，而就地改是「先改本地那份、再写库」——
+   不换一下的话界面持有的和库里存的是同一个对象，改完两边一起变，
+   「写失败弹回真值」这条根本测不出来（真库里这两份是分开的）。
+   所以先把那一行换成内容一样的**新对象**，让界面手里那份变成「旧的」。 */
+const r1db = DB.resources.findIndex((r) => r.id === 'r1');
+DB.resources[r1db] = Object.assign({}, DB.resources[r1db]);
+failNext = 'permission denied for table resources';
+const nameIn7 = resNameInput(byResName('线性代数（改过名）'));
+clearToast();
+nameIn7.value = '这个名字不该留下来';
+nameIn7.fire('change', { target: { value: nameIn7.value } });
+await tick(); await tick();
+ok(failNext === null, '（failNext 已消耗）');
+ok(DB.resources.find((r) => r.id === 'r1').name === '线性代数（改过名）', '写失败，库里当然没变');
+const card7 = byResName('线性代数（改过名）');
+ok(!!card7, '界面上那一行回到了原来那个名字（写失败没留下改过的痕迹）');
+ok(!!card7 && resNameInput(card7).value === '线性代数（改过名）',
+  '界面也弹回真值 —— 不留「看着改了、其实没改」的假象');
+ok($('toast').textContent.includes('permission denied'), '把库里的原话报出来：' + $('toast').textContent);
+
+/* 还回去：名字 / 平台 / 学科 / 类型 / 状态都是。章节在另一张表里，这段没碰过。 */
+Object.assign(DB.resources.find((r) => r.id === 'r1'), keepR1);
 $('btn-refresh').fire('click'); await tick(); await tick();
-ok($('r-add').textContent === '添加' && cancelBtn().hidden === true,
-  '正在改的那条被别人删了 → 表单自动退回「新建」，不会假装存成功');
-
-DB.resources.splice(r1Idx, 0, r1Gone);
-Object.assign(r1Gone, keepR1);
-$('btn-refresh').fire('click'); await tick(); await tick();
-ok(!!resRowOf('线性代数应该这样学') && !hasCls(resRowOf('线性代数应该这样学'), 'editing')
-   && DB.resources.length === 5,
-  '把 r1 按原来的位置还回去，列表恢复原样：' + DB.resources.length + ' 条');
+ok(!!byResName('线性代数应该这样学') && DB.resources.length === 5
+   && rGroups().map(gName).join(' / ') === '数学 / 英语',
+  '把 r1 按原样还回去，列表恢复成 2 组：' + rGroups().map(gName).join(' / '));
 
 console.log('── 我的名字：各改各的（页头 / 状态卡 / 动态流里那个）──');
 /* 前提：没上传头像。前面「头像上传」那一段给 ME 写过 data URL，
@@ -2348,8 +2442,18 @@ ok(/\.rg-head\s*\{[^}]*border-bottom\s*:/.test(cssNoComment),
   '学科组头下面有一条细分隔线，跟下面的卡片分得开');
 ok(/\.rg-n\s*\{[^}]*margin-left\s*:\s*auto/.test(cssNoComment),
   '组头右边那个「N 个」被推到最右边，不跟学科名挤在一起');
-ok(/\.item\.editing\s*\{[^}]*border-color\s*:\s*var\(--series-1\)/.test(cssNoComment),
-  '正在改的那一行用蓝描边标出来，跟上面表单里填的对得上');
+/* ── 就地编辑那层「平时像文字、点进去才像输入框」的样式 ──
+   不加这一层，一屏资源全是框框，比原来还乱。三条缺一不可：
+   平时透明、移上去透出「这儿能改」、点进去才是正经输入框。 */
+ok(/\.item\s+\.inline\s*\{[^}]*border\s*:\s*1px\s+solid\s+transparent/.test(cssNoComment),
+  '卡片上那些字段平时是**透明边框**，看着就是文字，不是一屏输入框');
+ok(/\.item\s+\.inline:hover\s*\{[^}]*border-color\s*:\s*var\(--border\)/.test(cssNoComment),
+  '鼠标移上去才透出边框 —— 「这儿能改」的信号只在她要看的时候出现');
+ok(/\.item\s+\.inline:focus\s*\{[^}]*border-color\s*:\s*var\(--series-1\)/.test(cssNoComment),
+  '点进去用强调色描边，跟页面其他地方「正在编辑」说的是同一种颜色');
+ok(/\.item\s+\.inline\s*\{[^}]*padding\s*:\s*2px\s+4px/.test(cssNoComment),
+  '内边距恒定、不带负 margin —— 聚焦时盒子尺寸不变，旁边那块不会跟着抖一下');
+ok(!/\.item\.editing/.test(cssNoComment), '「正在改」那套描边样式跟着拆掉了，不留死代码');
 
 /* 引一个**不存在**的自定义属性，浏览器会静默忽略整条声明 ——
    这类错没有任何别的机会被发现（假 DOM 不算 CSS，也没人去看渲染结果）。
