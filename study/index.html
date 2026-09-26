@@ -54,7 +54,7 @@
 
   <nav class="tabs" role="tablist">
     <button class="tab on" data-tab="home">主页</button>
-    <button class="tab" data-tab="goals">30 天目标</button>
+    <button class="tab" data-tab="goals">月度任务</button>
     <button class="tab" data-tab="tasks">大任务拆解</button>
     <button class="tab" data-tab="daily">今日完成情况</button>
     <button class="tab" data-tab="res">学习资源</button>
@@ -82,8 +82,32 @@
     </div>
   </section>
 
-  <!-- ── 30 天目标 ── -->
+  <!-- ── 月度任务 ── -->
   <section class="pane" id="pane-goals" hidden>
+    <!-- 月度任务视图（主位）——一格一天。数据是现算的：其他页签当月更新的东西
+         （完成的小任务 / 目标、推进未完成的那一步、考的试、加的资源、当天的心情）
+         都会自动落到对应的格子上，不用在这儿再录一遍。 -->
+    <div class="card">
+      <h2>月度任务</h2>
+      <p class="sub" id="mo-sub">…</p>
+      <p class="hint" id="mo-warn" hidden></p>
+      <div class="row tight" id="mo-nav" style="margin:14px 0 12px"></div>
+      <div class="legend" id="mo-legend"></div>
+      <div class="mo-wrap">
+        <div class="mo-head" id="mo-head"></div>
+        <div class="mo-grid" id="mo-grid"></div>
+      </div>
+      <p class="hint">格子深浅和右下角数字 = 那天<b>完成</b>了几件事（小任务 + 目标）；
+        格子里的「考」= 那天有考试，后面跟的是得分；右上角小表情 = 那天记了心情。
+        把鼠标停在格子上能看到那天的全部明细（含只推进未完成的、加的资源、写的两句），
+        下面是同样内容的表格版。</p>
+      <details style="margin-top:14px">
+        <summary>表格视图（每天的明细）</summary>
+        <div id="mo-table"></div>
+      </details>
+    </div>
+
+    <!-- 30 天小目标（下面）——月视图的一路输入：自己给自己定的周期目标 -->
     <div class="card">
       <h2>新建 30 天小目标</h2>
       <div class="row">
@@ -99,28 +123,12 @@
         <label class="f" for="g-detail">说明（可选）</label>
         <input type="text" id="g-detail" placeholder="怎么算完成？">
       </div>
-      <p class="hint">周期 = 开始日 + 29 天。进度条按「进度 / 目标值」走。</p>
+      <p class="hint">周期 = 开始日 + 29 天。进度条按「进度 / 目标值」走；
+        标记完成的那天会落到上面的月视图里，落到哪一格按完成时间算。</p>
     </div>
 
-    <!-- 目标备忘录（前）——两个人各自的目标与进度 -->
+    <!-- 目标备忘录 —— 两个人各自的小目标与进度 -->
     <div class="cols" id="goals-cols"></div>
-
-    <!-- 月行程表（后）——按天汇总推进情况，跟着上面的数据自动更新 -->
-    <div class="card">
-      <h2>月行程表</h2>
-      <p class="sub" id="mo-sub">…</p>
-      <p class="hint" id="mo-warn" hidden></p>
-      <div class="row tight" id="mo-nav" style="margin:14px 0 12px"></div>
-      <div class="legend" id="mo-legend"></div>
-      <div class="mo-wrap">
-        <div class="mo-head" id="mo-head"></div>
-        <div class="mo-grid" id="mo-grid"></div>
-      </div>
-      <details style="margin-top:14px">
-        <summary>表格视图（每天的明细）</summary>
-        <div id="mo-table"></div>
-      </details>
-    </div>
   </section>
 
   <!-- ── 大任务拆解 ── -->

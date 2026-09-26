@@ -297,9 +297,9 @@ console.log('── 主页：入口跳转 ──');
 // entries 顺序 = goals, tasks, daily, res, data（下标 0 起）
 const entries = findAll($('home-entries'), (n) => n.className.includes('entry'));
 ok(entries.length === 6, '入口卡片 6 个（加了考试成绩）');
-ok(entries[0].textContent.includes('30 天目标'), '入口顺序：' + entries.map((e) => e.textContent.slice(0, 4)).join(' '));
+ok(entries[0].textContent.includes('月度任务'), '入口顺序：' + entries.map((e) => e.textContent.slice(0, 4)).join(' '));
 entries[0].fire('click'); await tick();
-ok(tabs[1].className.includes('on') && !tabs[0].className.includes('on'), '点「30 天目标」→ 页签切过去了');
+ok(tabs[1].className.includes('on') && !tabs[0].className.includes('on'), '点「月度任务」→ 页签切过去了');
 ok($('pane-goals').hidden === false && $('pane-home').hidden === true, 'pane 也跟着切了');
 ok($('goals-cols').textContent.includes('背完 300 个单词'), '目标内容渲染');
 tabs[0].fire('click'); await tick();
@@ -450,12 +450,43 @@ ok($('mo-grid').children.filter((c) => !c.className.includes('blank')).every((c)
   '8 月没有记录 → 一格都没上色');
 $('mo-nav').children[2].fire('click'); await tick();
 ok($('mo-nav').children[1].textContent.includes('9 月'), '点下月 → 回到 9 月');
-ok($('mo-legend').children.length === 4, '图例 4 档（无 / 1–2 / 3–5 / 6+），实际 ' + $('mo-legend').children.length);
+ok($('mo-legend').children.length === 5, '图例 4 档色阶 + 1 个考试标记，实际 ' + $('mo-legend').children.length);
 ok($('mo-legend').children[1].textContent.includes('1–2 件'), '图例文案说清楚深浅代表什么');
+ok($('mo-legend').children[4].textContent.includes('考试'), '图例里单独说明了「考」这个标记');
 ok($('mo-table').textContent.includes('2026-09-21'), '表格视图列出 9/21');
 ok($('mo-table').textContent.includes('第 1-4 讲'), '表格视图写出那天做了什么');
 ok($('mo-table').textContent.includes('😄'), '表格视图带心情');
-ok($('mo-sub').textContent.includes('这个月推进了'), '统计副标题：' + $('mo-sub').textContent);
+ok($('mo-sub').textContent.includes('这个月完成'), '统计副标题：' + $('mo-sub').textContent);
+
+/* ── 其他表当月更新的东西，同步到月度任务视图 ── */
+console.log('── 月度任务视图：考试成绩 / 学习资源同步进来 ──');
+const deOf = (d) => { const k = findAll(cell(d), (n) => /\bde\b/.test(n.className))[0]; return k ? k.textContent : ''; };
+ok(deOf(12) === '考108', '9/12 那格标出考试得分（108/120），实际「' + deOf(12) + '」');
+ok(deOf(18) === '考88', '9/18 对方的英语月考也在日历上（这一页看的是两人的共同进度）');
+ok(deOf(20) === '考', '9/20 那场还没出分 → 只标「考」，不假造一个 0 分');
+ok(deOf(21) === '', '9/21 没有考试 → 没有标记');
+ok(dcOf(12) === '', '9/12 只考了试、没完成任务 → 右下角仍是空（考试不改深浅口径）');
+ok(!/\blv\d\b/.test(cell(12).className), '9/12 那格没被考试点亮成有进度的样子');
+ok(cell(12).title.includes('考试：期中数学（数学）：108 / 120（90%）'),
+  '格子悬停明细里有这一场：' + cell(12).title.split('\n').filter((s) => s.startsWith('考试'))[0]);
+ok(cell(20).title.includes('没填分'), '没出分的那场，悬停里写的是「没填分」');
+ok(cell(5).title.includes('加了资源：线性代数应该这样学（工具书）'),
+  '9/5 加了资源 → 也落到那天的明细里');
+ok(cell(23).title.includes('心情 😄（状态不错）'), '日记那天的补充也进悬停明细：' +
+  (cell(23).title.split('\n').filter((s) => s.startsWith('心情'))[0] || '(没有)'));
+ok($('mo-table').textContent.includes('108 / 120'), '表格视图也有考试那一列');
+ok($('mo-table').textContent.includes('期中数学'), '表格视图写出考的是什么');
+const headTxt = findAll($('mo-table'), (n) => n.tagName === 'TH').map((n) => n.textContent).join('/');
+ok(headTxt === '日期/完成/考试/心情/做了什么', '表格视图表头：' + headTxt);
+ok($('mo-table').textContent.includes('加了资源：线性代数应该这样学'), '表格视图里也有资源');
+ok($('mo-table').textContent.includes('心情补充：状态不错'), '日记的补充文字也带出来');
+/* 统计句要真的把别的表算进去：这个月 9/5–9/9 一共 5 个资源、9 月 3 场考试 */
+ok($('mo-sub').textContent.includes('考了 3 场试'), '统计句报了这个月考了几场：' + $('mo-sub').textContent);
+ok($('mo-sub').textContent.includes('加了 5 个学习资源'), '统计句报了这个月加了几个资源');
+/* 只有 9/12（108/120）和 9/18（88/100）两场有满分：196/220 = 89.1%。
+   9/20 那场没出分，不能算进分母，也不能被当成 0 分拉低平均。 */
+ok($('mo-sub').textContent.includes('有满分的 2 场，折算下来平均 89.1%'),
+  '平均分只算有满分的 2 场：' + $('mo-sub').textContent);
 
 /* ══════════════════════════════════════════════════════════════
    本轮新增：今日完成情况
@@ -547,6 +578,12 @@ if (inThisMonth) {
   /* 今天本来只有 g1 一个完成（s3 刚退回未完成）。dayStats 只认 done，
      推进盖的 done_at 不该点亮格子 —— 点亮了就说明口径串了。 */
   ok(dcOf(now.getDate()) === '1', '月行程表只算真完成的，推进不点亮格子，实际「' + dcOf(now.getDate()) + '」');
+  /* 但「推进未完成」不是被丢掉 —— 它进悬停明细和统计句，只是不改深浅。
+     这两条一起看才是完整口径：格子上不亮，明细里查得到。 */
+  ok(cell(now.getDate()).title.includes('推进未完成：习题课'),
+    '推进的那一步仍然写进悬停明细：' +
+    (cell(now.getDate()).title.split('\n').filter((s) => s.startsWith('推进未完成'))[0] || '(没有)'));
+  ok($('mo-sub').textContent.includes('只推进未完成'), '统计句单独报「只推进未完成」的步数');
 }
 tabs[0].fire('click'); await tick();          // home
 ok(!$('feed').textContent.includes('习题课'), '动态流没把推进误报成完成');

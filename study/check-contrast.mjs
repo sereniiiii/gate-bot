@@ -23,10 +23,18 @@ if (!Object.keys(lvPct).length) {
   process.exit(1);
 }
 
-/* 哪些档位的日期字被改成了主文字色，也从 app.css 里读 ——
+/* 哪些档位的日期字 / 考试标记被改成了主文字色，也从 app.css 里读 ——
    别在这里替它假设，否则把 CSS 那条规则删了脚本还说 PASS */
-const primaryLv = new Set([...CSS.matchAll(/\.mo-d\.lv(\d)\s+\.dn/g)].map((m) => Number(m[1])));
+const lvUsingPrimary = (cls) =>
+  new Set([...CSS.matchAll(new RegExp('\\.mo-d\\.lv(\\d)\\s+\\' + '.' + cls, 'g'))].map((m) => Number(m[1])));
+const primaryLv = lvUsingPrimary('dn');
+const dePrimaryLv = lvUsingPrimary('de');
 if (primaryLv.size) console.log('（app.css 中 lv' + [...primaryLv].join(' / lv') + ' 的日期字使用主文字色）');
+if (!dePrimaryLv.size) {
+  console.error('❌ app.css 里没有 .mo-d.lvN .de{color:var(--text-primary)} 这条 —— ' +
+    '深色格子上「考108」这种小字会掉到 AA 以下');
+  process.exit(1);
+}
 
 const hex = (s) => { s = s.replace('#', ''); return [0, 2, 4].map((i) => parseInt(s.slice(i, i + 2), 16)); };
 /* color-mix(in srgb, A p%, B)：在 sRGB 伽马空间线性插值 */
@@ -49,15 +57,18 @@ const MODES = {
 let bad = 0;
 for (const [mode, M] of Object.entries(MODES)) {
   console.log(`\n【${mode}】`);
-  const rows = [['无（无记录）', 0, M.secondary], ...Object.entries(lvPct).map(([k, p]) => [
-    `${k}（${p * 100}%）`, p, primaryLv.has(Number(k.slice(2))) ? M.primary : M.secondary,
+  const rows = [['无（无记录）', 0, 0], ...Object.entries(lvPct).map(([k, p]) => [
+    `${k}（${p * 100}%）`, p, Number(k.slice(2)),
   ])];
-  for (const [name, p, ink] of rows) {
+  for (const [name, p, lv] of rows) {
     const bg = p ? mix(M.s1, M.surface, p) : hex(M.surface);
-    const r = ratio(hex(ink), bg), rv = ratio(hex(M.primary), bg);
-    const okd = r >= 4.5, okv = rv >= 4.5;
-    if (!okd || !okv) bad++;
+    const ink = primaryLv.has(lv) ? M.primary : M.secondary;
+    const dInk = dePrimaryLv.has(lv) ? M.primary : M.secondary;
+    const r = ratio(hex(ink), bg), rv = ratio(hex(M.primary), bg), re = ratio(hex(dInk), bg);
+    const okd = r >= 4.5, okv = rv >= 4.5, oke = re >= 4.5;
+    if (!okd || !okv || !oke) bad++;
     console.log(`  ${name.padEnd(12)} 底 ${fmt(bg)}  日期字 ${r.toFixed(2)}:1 ${okd ? 'PASS' : 'FAIL'}` +
+                `   考试标记 ${re.toFixed(2)}:1 ${oke ? 'PASS' : 'FAIL'}` +
                 `   件数数字 ${rv.toFixed(2)}:1 ${okv ? 'PASS' : 'FAIL'}`);
   }
 }

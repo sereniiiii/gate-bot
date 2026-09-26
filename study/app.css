@@ -316,6 +316,9 @@ details[open] summary{margin-bottom:11px}
 .mo-d.blank{background:none;border-color:transparent}
 .mo-d .dn{font-size:12px;font-weight:600;color:var(--text-secondary);line-height:1.2}
 .mo-d .dm{position:absolute;top:4px;right:6px;font-size:12px;line-height:1}
+/* 那天考的试：跟在日期下面一行，小一号。深色格子上跟着日期一起提亮 */
+.mo-d .de{font-size:10.5px;font-weight:650;letter-spacing:-.01em;
+  color:var(--text-secondary);line-height:1.25;white-space:nowrap}
 .mo-d .dc{margin-top:auto;font-size:16px;font-weight:650;letter-spacing:-.02em}
 .mo-d.lv1{background:color-mix(in srgb, var(--series-1) 12%, var(--surface-1))}
 .mo-d.lv2{background:color-mix(in srgb, var(--series-1) 26%, var(--surface-1))}
@@ -325,7 +328,9 @@ details[open] summary{margin-bottom:11px}
    （实测浅色 lv3 上只有 4.45:1），改用主文字色 —— 复核命令在提交信息里 */
 .mo-d.today .dn,
 .mo-d.lv2 .dn,
-.mo-d.lv3 .dn{color:var(--text-primary)}
+.mo-d.lv3 .dn,
+.mo-d.lv2 .de,
+.mo-d.lv3 .de{color:var(--text-primary)}
 
 /* 图例里的色阶块，和格子用同一套混色，改一处两边一起变 */
 .legend .kd{width:14px;height:14px;border-radius:5px;flex:0 0 auto;
@@ -333,6 +338,8 @@ details[open] summary{margin-bottom:11px}
 .legend .kd.lv1{background:color-mix(in srgb, var(--series-1) 12%, var(--surface-1))}
 .legend .kd.lv2{background:color-mix(in srgb, var(--series-1) 26%, var(--surface-1))}
 .legend .kd.lv3{background:color-mix(in srgb, var(--series-1) 42%, var(--surface-1))}
+/* 考试标记不是色阶的一档，用虚线描边 + 不填色区分：不靠颜色也能认出是另一类 */
+.legend .kd.exam{background:none;border:1px dashed var(--text-secondary)}
 
 /* ══════════════════════════════════════════════════════════════
    今日完成情况：选「属于哪个大任务」的 chip
@@ -402,6 +409,7 @@ details[open] summary{margin-bottom:11px}
   .mo-head,.mo-grid{gap:4px}
   .mo-d{min-height:46px;padding:4px;border-radius:7px}
   .mo-d .dc{font-size:13px}
+  .mo-d .de{font-size:9px}
   .mo-d .dm{font-size:10px;top:3px;right:4px}
   .ov-nm{flex-basis:40%}
   .ov-v{min-width:46px}

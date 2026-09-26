@@ -110,21 +110,37 @@
     return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
   }
 
-  /* 按天聚合「那天发生了什么」，月行程表的数据源。
-   三张表都算进来：完成的小任务、完成的目标、当天的日记。 */
+  /* 按天聚合「那天发生了什么」—— 月度任务视图的数据源。
+   五张表全算进来，不只看目标：完成的小任务 / 完成的目标 / 只推进未完成的那一步 /
+   那天考的试 / 那天加的学习资源 / 当天的日记。全部现算，没有新表；
+   哪张表还没建（比如 exams 没跑 SQL）就自然为空，不影响别的。
+
+   注意：**完成**（subs + goals）才是格子深浅和右下角数字的口径；
+   pushes（推进未完成）、考试、资源只进悬停明细、表格视图和统计句，不点亮格子。 */
   function dayStats() {
     const m = {};
-    const slot = (k) => (m[k] || (m[k] = { subs: [], goals: [], log: null }));
+    const slot = (k) => (m[k] || (m[k] = { subs: [], goals: [], pushes: [], exams: [], res: [], log: null }));
     for (const x of S.subtasks) {
-      if (!x.done) continue;
       if (isTwinEcho(x)) continue;        // 绑着的两条是同一件事，只算一次
       const k = isoDate(x.done_at);
-      if (k) slot(k).subs.push(x);
+      if (!k) continue;
+      if (x.done) slot(k).subs.push(x);   // 完成
+      else slot(k).pushes.push(x);        // 记了「今天推进了」但还没完成
     }
     for (const g of S.goals) {
       if (!g.done) continue;
       const k = isoDate(g.done_at);
       if (k) slot(k).goals.push(g);
+    }
+    /* 成绩：exam_date 是 date 列，PostgREST 直接给 'YYYY-MM-DD' 纯文本，
+       拿它当键就行 —— 反而是过一遍 new Date() 会被时区带偏一天。 */
+    for (const e of S.exams) {
+      if (e.exam_date) slot(e.exam_date).exams.push(e);
+    }
+    /* 学习资源：按添加时间落格（库里没有单独的「学了没」时间戳） */
+    for (const r of S.resources) {
+      const k = isoDate(r.created_at);
+      if (k) slot(k).res.push(r);
     }
     for (const d of S.daily) {
       if (!d.log_date) continue;
@@ -132,8 +148,20 @@
     }
     return m;
   }
-  /* 那一天一共推进了几件事（小任务 + 目标） */
+  /* 那一天一共完成了几件事（小任务 + 目标）—— 只有这个进格子深浅 */
   const dayCount = (e) => (e ? e.subs.length + e.goals.length : 0);
+
+  /* 那天有动静吗（完成 / 推进 / 考试 / 加了资源 / 记了心情，任意一样） */
+  const dayActive = (e) => !!e && (dayCount(e) + e.pushes.length + e.exams.length + e.res.length > 0 || !!e.log);
+
+  /* 格子上考试的小标记：一场有分就写分，多场只报场数。
+     分数是给人扫一眼的，不写「/满分」—— 格子里放不下，全量在悬停和表格视图里。 */
+  function examMark(list) {
+    if (!list.length) return '';
+    if (list.length > 1) return '考×' + list.length;
+    const s = list[0].score;
+    return (s === null || s === undefined || s === '') ? '考' : '考' + fmtNum(s);
+  }
 
   /* 判断一个值是不是 DOM 节点。真假 DOM 都能认：真节点有 nodeType，
      假 DOM（smoke-test）的 El 两个都有。 */
@@ -525,13 +553,15 @@
 
   function emptyNote(txt) { return h('div', { class: 'empty', text: txt }); }
 
-  /* ── 页签一：30 天小目标（前：目标备忘录  后：月行程表）────── */
+  /* ── 页签一：月度任务（主位：月度任务视图  下面：目标备忘录）──────
+     这一页的主位是「这个月做了什么」那张日历，其他表当月更新的东西都同步进来；
+     30 天小目标（Memo）降成下面一块 —— 它是月视图的一路输入，不是这一页的全部。 */
   function renderGoals() {
     renderGoalMemo();
     renderMonth();
   }
 
-  /* 目标备忘录：两人各自的 30 天目标 + 进度条 */
+  /* 目标备忘录：两人各自的 30 天小目标 + 进度条 */
   function renderGoalMemo() {
     twoCols($('goals-cols'), S.goals, (owner, rows, mine) => {
       if (!rows.length) return emptyNote(mine ? '还没有目标，上面加一个。' : '对方还没添加目标。');
@@ -578,11 +608,15 @@
     });
   }
 
-  /* ── 月行程表 ──────────────────────────────────────────────── */
+  /* ── 月度任务视图 ──────────────────────────────────────────── */
   const MO_WEEK = ['日', '一', '二', '三', '四', '五', '六'];
 
-  /* 一格一天。格子深浅 = 那天推进了几件事（完成的小任务 + 完成的目标），
-     右上角小表情 = 那天记了心情，右下角数字 = 推进件数。
+  /* 一格一天。这一页不只看目标：其他表在当月更新的东西都同步到这儿。
+     格子深浅 + 右下角数字 = 那天**完成**了几件事（小任务 + 目标）；
+     左上角下面一行 = 那天考的试（「考108」/「考」/「考×2」）；
+     右上角小表情 = 那天记了心情。
+     「推进未完成」、加的学习资源、当天写的那两句，不占格子（放不下），
+     但悬停明细和下面的表格视图里一条不少。
      数据每次现算，所以在别处勾完任务、或对方那边实时推过来，这里都会跟着变。 */
   function renderMonth() {
     const stats = dayStats();
@@ -600,7 +634,8 @@
     clear(head);
     MO_WEEK.forEach((w) => head.appendChild(h('span', { text: w })));
 
-    let nSub = 0, nGoal = 0, nLog = 0, nDay = 0;
+    let nSub = 0, nGoal = 0, nLog = 0, nActive = 0;
+    let nPush = 0, nExam = 0, nRes = 0, nScored = 0, scGot = 0, scFull = 0;
     const grid = $('mo-grid');
     clear(grid);
 
@@ -611,11 +646,20 @@
       const key = S.month + '-' + pad(day);
       const e = stats[key];
       const n = dayCount(e);
-      if (n) nDay++;
+      if (dayActive(e)) nActive++;
       if (e) {
         nSub += e.subs.length;
         nGoal += e.goals.length;
+        nPush += e.pushes.length;
+        nRes += e.res.length;
         if (e.log) nLog++;
+        for (const ex of e.exams) {
+          nExam++;
+          // 平均分只算「得分和满分都填了」的场 —— 缺一个就不是一个可比的数
+          if (ex.score != null && ex.score !== '' && Number(ex.full_score) > 0) {
+            nScored++; scGot += Number(ex.score); scFull += Number(ex.full_score);
+          }
+        }
       }
       const lv = n === 0 ? 0 : n <= 2 ? 1 : n <= 5 ? 2 : 3;
 
@@ -626,17 +670,26 @@
         e.subs.forEach((x) => {
           bits.push('完成：' + (x.title || '(未填写)') + ' —— ' + parentLabel(x));
         });
+        e.pushes.forEach((x) => {
+          bits.push('推进未完成：' + (x.title || '(未填写)') + ' —— ' + parentLabel(x));
+        });
+        e.exams.forEach((ex) => bits.push('考试：' + examLine(ex)));
+        e.res.forEach((r) => bits.push('加了资源：' + (r.name || '(未命名)') + '（' +
+          (KIND_LABEL[r.kind] || '资源') + '）'));
         if (e.log) {
           bits.push('心情 ' + (MOODS[e.log.mood - 1] || '—') +
-                    (e.log.difficulty ? '：' + e.log.difficulty : ''));
+                    (e.log.difficulty ? '：' + e.log.difficulty : '') +
+                    (e.log.note ? '（' + e.log.note + '）' : ''));
         }
       }
 
+      const mark = e ? examMark(e.exams) : '';
       grid.appendChild(h('div', {
         class: 'mo-d' + (lv ? ' lv' + lv : '') + (key === t ? ' today' : ''),
         title: key + '\n' + (bits.length ? bits.join('\n') : '这天没有记录'),
       },
         h('span', { class: 'dn', text: String(day) }),
+        mark ? h('span', { class: 'de', text: mark }) : null,
         e && e.log ? h('span', { class: 'dm', text: MOODS[e.log.mood - 1] || '' }) : null,
         n ? h('span', { class: 'dc', text: String(n) }) : null
       ));
@@ -659,8 +712,15 @@
     }));
     nav.appendChild(h('button', { class: 'tiny', text: '下月 ›', onclick: () => shift(1) }));
 
-    $('mo-sub').textContent = '这个月推进了 ' + nSub + ' 个小任务、' + nGoal + ' 个目标，' +
-      '有 ' + nDay + ' 天在动，记了 ' + nLog + ' 天心情。';
+    /* 统计句：把五张表在当月的动静并成一句话。
+       平均分只算有满分的场次，并写明是几场 —— 不然「平均」会被缺分的那几场稀释掉。 */
+    const avgTxt = nScored > 0 ? '（有满分的 ' + nScored + ' 场，折算下来平均 ' +
+      Math.round(scGot / scFull * 1000) / 10 + '%）' : '';
+    $('mo-sub').textContent = '这个月完成 ' + nSub + ' 个小任务、' + nGoal + ' 个目标' +
+      (nPush ? '，另有 ' + nPush + ' 步只推进未完成' : '') + '；' +
+      (nExam ? '考了 ' + nExam + ' 场试' + avgTxt + '；' : '') +
+      (nRes ? '加了 ' + nRes + ' 个学习资源；' : '') +
+      '有 ' + nActive + ' 天有记录，记了 ' + nLog + ' 天心情。';
 
     /* 没有 done_at 列时，已完成的旧记录没有时间戳，日历上会凭空少掉一截。
        与其让她以为日历坏了，不如直接说清楚缺什么、怎么补。 */
@@ -676,7 +736,7 @@
       warn.hidden = true;
     }
 
-    // 图例：深浅代表推进件数
+    // 图例：深浅代表完成件数；考试是另一路的标记，用虚线块区分开，别混进色阶里
     const lg = $('mo-legend');
     clear(lg);
     [['无', null], ['1–2 件', 'lv1'], ['3–5 件', 'lv2'], ['6 件以上', 'lv3']].forEach(([txt, lv]) => {
@@ -685,8 +745,23 @@
         h('span', { text: txt })
       ));
     });
+    lg.appendChild(h('span', { class: 'item2' },
+      h('span', { class: 'kd exam' }),
+      h('span', { text: '那天有考试（格子里的「考」+ 得分）' })
+    ));
 
     renderMonthTable(dim, stats);
+  }
+
+  /* 一场考试压成一行字，格子的悬停明细和表格视图共用 */
+  function examLine(ex) {
+    const s = ex.score;
+    const has = !(s === null || s === undefined || s === '');
+    const full = Number(ex.full_score) > 0 ? Number(ex.full_score) : null;
+    const sc = has
+      ? fmtNum(s) + (full ? ' / ' + fmtNum(full) + '（' + pct(Number(s), full) + '%）' : '')
+      : '没填分';
+    return (ex.name || '考试') + (ex.subject ? '（' + ex.subject + '）' : '') + '：' + sc;
   }
 
   /* 表格视图 —— 日历格子放不下明细，也给读屏和色觉障碍留一条不靠颜色的路 */
@@ -703,9 +778,15 @@
       e.subs.forEach((x) => {
         what.push('完成：' + (x.title || '(未填写)') + ' —— ' + parentLabel(x));
       });
+      e.pushes.forEach((x) => {
+        what.push('推进未完成：' + (x.title || '(未填写)') + ' —— ' + parentLabel(x));
+      });
+      e.res.forEach((r) => what.push('加了资源：' + (r.name || '(未命名)')));
+      if (e.log && e.log.note) what.push('心情补充：' + e.log.note);
       rows.push([
         key,
-        String(dayCount(e)),
+        dayCount(e) ? String(dayCount(e)) : '—',
+        e.exams.length ? e.exams.map(examLine).join('；') : '—',
         e.log ? (MOODS[e.log.mood - 1] || '—') : '—',
         what.join('；') || '—',
       ]);
@@ -716,13 +797,14 @@
     }
     const tbl = h('table');
     tbl.appendChild(h('thead', null, h('tr', null,
-      h('th', { text: '日期' }), h('th', { text: '推进' }),
-      h('th', { text: '心情' }), h('th', { text: '做了什么' })
+      h('th', { text: '日期' }), h('th', { text: '完成' }),
+      h('th', { text: '考试' }), h('th', { text: '心情' }),
+      h('th', { text: '做了什么' })
     )));
     const tb = h('tbody');
     rows.forEach((r) => tb.appendChild(h('tr', null,
-      h('td', { text: r[0] }), h('td', { text: r[1] }),
-      h('td', { text: r[2] }), h('td', { text: r[3] })
+      h('td', { text: r[0] }), h('td', { text: r[1] }), h('td', { text: r[2] }),
+      h('td', { text: r[3] }), h('td', { text: r[4] })
     )));
     tbl.appendChild(tb);
     box.appendChild(h('div', { class: 'tblwrap' }, tbl));
@@ -955,7 +1037,7 @@
     const noTime = S.subtasks.filter((x) => x.done && !x.done_at && isMine(x)).length;
     if (noTime) {
       warn.textContent = '注意：你有 ' + noTime + ' 条已完成的记录没有完成时间（库里还缺 done_at 列），' +
-        '所以不会出现在下面的「今天完成情况」里，月行程表上也看不到。' +
+        '所以不会出现在下面的「今天完成情况」里，「月度任务」那张日历上也看不到。' +
         '去 Supabase 后台跑一次 study/setup-3-feed.sql 就好；在那之前新记的会正常带上时间。';
       warn.hidden = false;
     } else {
@@ -1124,7 +1206,7 @@
     tip.textContent = both
       ? '大任务那一步只记一笔推进（还不算完成）；这一章勾掉就算完成'
       : plan[0] === 'res'
-        ? '勾完，这本书的章节进度条和月行程表立刻跟着变'
+        ? '勾完，这本书的章节进度条和「月度任务」那张日历立刻跟着变'
         : '只记录今天动过它，进度条不动 —— 真做完了去「大任务拆解」自己勾';
   }
 
@@ -1568,8 +1650,10 @@
 
   /* ── 页签五：考试成绩 ──────────────────────────────────────── */
   /* 这一页是**独立一张表**（exams），不在原来六张表的任何一条链路上：
-     不参与进度条、月行程表、动态流 —— 考试分数和「今天推进了什么」是两回事，
-     混进去会让那三块的口径变浑。要联动的话是下一步的事。 */
+     读取单独一条、失败单独降级，不进 loadAll 的 Promise.all；
+     不参与进度条和动态流（考试分数和「今天推进了什么」是两回事）。
+     但**月度任务视图**会按 exam_date 把它收进来（只在悬停明细和表格视图里出现，
+     不参与格子深浅），这样「这个月做了什么」是一整幅图，不用来回翻页签。 */
 
   const fmtNum = (n) => {
     const v = Number(n);
@@ -2018,7 +2102,7 @@
           }) : null
         ),
         h('div', { class: 'pc-rows' },
-          pcRow('30 天目标',
+          pcRow('月度目标',
             g.length ? g.filter((x) => x.done).length + ' / ' + g.length + ' 个完成' : '还没建',
             g.length ? '累计 ' + gProg + ' / ' + gTarget : ''),
           pcRow('大任务',
@@ -2038,7 +2122,7 @@
   function renderEntries() {
     const box = $('home-entries');
     clear(box);
-    [['goals', '30 天目标', '看谁在跑什么目标'],
+    [['goals', '月度任务', '这个月做了什么，一格一天'],
      ['tasks', '大任务拆解', '推进小任务进度'],
      ['daily', '今日完成情况', '记下今天完成了什么'],
      ['res', '学习资源', '工具书 / 网课 / 老师'],
