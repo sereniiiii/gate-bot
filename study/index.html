@@ -85,6 +85,29 @@
       <h2>去做点什么</h2>
       <div class="row" id="home-entries" style="margin-top:2px"></div>
     </div>
+
+    <!-- 校训 · 摘抄：2026-09-27 从「导出 / 导入」搬过来。
+         原来它躺在设置页最底下，要滚一屏才露头 —— 她的原话是「我没看到」。
+         需求本来就是「可以自己添加摘抄」，入口藏在设置页等于没做到。
+         整块搬过来、id 一个没动，所以 app.js 那边零改动。 -->
+    <div class="card">
+      <h2>校训 · 摘抄</h2>
+      <p class="hint" style="margin-top:0">
+        登录页和主页顶上那句就是从这里来的，随机显示一条。两个人共用这一份清单，改完两边都会变。<br>
+        学校校训、书里抄下来的句子，都放这儿 —— 第二格写出来源就行。
+        <span id="mt-warn"></span>
+      </p>
+      <div class="row tight" id="mt-form" style="margin-top:12px">
+        <input type="text" id="mt-text" class="grow" placeholder="一句话，校训或摘抄都行">
+        <input type="text" id="mt-school" style="max-width:170px" placeholder="出处：学校 / 书名 / 作者">
+        <button class="primary" id="mt-add">加上</button>
+      </div>
+      <div class="row tight" style="margin-top:10px">
+        <button id="mt-shuffle">换一条看看</button>
+        <span class="hint" id="mt-now" style="margin:0"></span>
+      </div>
+      <div id="mt-list" style="margin-top:12px"></div>
+    </div>
   </section>
 
   <!-- ── 月度任务（倒计时 + 月历） ── -->
@@ -389,24 +412,6 @@
         24 个字以内，不能空着。改了名字不会动仓库和网址 ——
         那两个在 GitHub 那边，这里改不到。
       </p>
-    </div>
-    <div class="card">
-      <h2>校训 · 摘抄</h2>
-      <p class="hint" style="margin-top:0">
-        登录页和主页随机显示一句。两个人共用这一份清单，改完两边都会变。<br>
-        学校校训、书里抄下来的句子，都放这儿 —— 第二格写出来源就行。
-        <span id="mt-warn"></span>
-      </p>
-      <div class="row tight" id="mt-form" style="margin-top:12px">
-        <input type="text" id="mt-text" class="grow" placeholder="一句话，校训或摘抄都行">
-        <input type="text" id="mt-school" style="max-width:170px" placeholder="出处：学校 / 书名 / 作者">
-        <button class="primary" id="mt-add">加上</button>
-      </div>
-      <div class="row tight" style="margin-top:10px">
-        <button id="mt-shuffle">换一条看看</button>
-        <span class="hint" id="mt-now" style="margin:0"></span>
-      </div>
-      <div id="mt-list" style="margin-top:12px"></div>
     </div>
   </section>
 

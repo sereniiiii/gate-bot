@@ -3006,7 +3006,9 @@
     clear(box);
     if (S.mtNoTable) return;         // 表都没有，列表点了也存不下，不画
     if (!S.mottos.length) {
-      box.appendChild(emptyNote('库里一条都没有，现在顶上显示的是**内置的 39 条校训**。'
+      /* 别在这条文案里写 Markdown 的星号 —— emptyNote 走的是 textContent，
+         星号会连字符一起原样显示出来（2026-09-27 截图里看见的）。 */
+      box.appendChild(emptyNote('库里一条都没有，现在顶上显示的是「内置的 39 条校训」。'
         + '在上面加一条自己的（校训或摘抄都行），它就会顶掉内置那份。'));
       return;
     }
