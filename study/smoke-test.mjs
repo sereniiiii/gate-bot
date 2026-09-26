@@ -50,7 +50,17 @@ class El {
   querySelectorAll() { return []; }
   getBoundingClientRect() { return { left: 0, top: 0, width: 720, height: 200 }; }
   get offsetWidth() { return 120; }
-  focus() {} scrollIntoView() {}
+  /* 真 input 失焦时会补一个 change（**只在值变过时**才发）。Enter 存 / Esc 还原
+     全靠这条 —— 假 DOM 里没有它，「按 Enter 到底存没存」根本测不出来。
+     focus() 记下进来时的值，blur() 跟前值比对，跟浏览器的 change 语义一致：
+     没 focus 过就直接改 value 不算「用户输入」，不会补 change。 */
+  focus() { this._atFocus = this.value; this.focusCount = (this.focusCount || 0) + 1; }
+  blur() {
+    const was = this._atFocus;
+    this._atFocus = undefined;
+    if (was !== undefined && was !== this.value) this.fire('change');
+  }
+  scrollIntoView() {}
   getContext() { return { drawImage() {} }; }
   toDataURL() { return 'data:image/jpeg;base64,' + 'A'.repeat(400); }
   get textContent() {
@@ -583,6 +593,47 @@ ok(!!oCard, '（找到对方那张卡）');
 ok(findAll(oCard, (n) => n.tagName === 'INPUT' && (n.type === 'text' || n.type === 'date')).length === 0,
   '对方那一栏的大任务名字 / 说明 / 截止日都还是只读文本，点不动');
 
+/* ── 行内编辑的另外两个键位：Enter 存、Esc 还原 ──────────────────
+   第三个是 Tab，它走的是浏览器失焦时补的那个 change，不用自己写代码 ——
+   所以下面测的是「失焦确实会存」这条前提，而不是某个 keydown 分支。
+   三个少一个都会卡住：没 Enter 就得去够鼠标，没 Esc 改错了没法退，没 Tab 敲不下去。 */
+const keyEv = (el, k) => el.fire('keydown', { key: k, target: el, preventDefault() {} });
+
+clearToast();
+const kName = cardIns(taskCard('学完线性代数（改过）'))[0];
+kName.focus();
+kName.value = 'Enter 改的名字';
+keyEv(kName, 'Enter'); await tick(); await tick();
+ok(DB.tasks.find((t) => t.id === 't1').title === 'Enter 改的名字',
+  'Enter 直接存了，不用再把鼠标挪出去点一下');
+ok($('toast').textContent === '已保存', '并且跟失焦一样说一声：' + $('toast').textContent);
+
+/* Esc：改了但不要了。库里**一次请求都不该发** —— 把原值写回去再失焦，值没变，
+   浏览器就不补 change（是「根本没发」，不是「发了再撤回」）。 */
+Object.assign(DB.tasks.find((t) => t.id === 't1'), { title: 'Esc 之前' });
+$('btn-refresh').fire('click'); await tick(); await tick();
+clearToast();
+const escName = cardIns(taskCard('Esc 之前'))[0];
+escName.focus();
+escName.value = '打了一半不要了';
+keyEv(escName, 'Escape'); await tick(); await tick();
+ok(DB.tasks.find((t) => t.id === 't1').title === 'Esc 之前', 'Esc 还原 —— 库里没被改');
+/* 这条要拿**同一个节点**问，不能再 taskCard(value) 找一次卡 —— taskCard 就是按
+   名字框里的值认卡的，而 Esc 改的正是那个值：实现被删掉时它会找不到卡、
+   cardIns(undefined) 直接抛 TypeError，测试**崩在断言上**而不是「断言失败」，
+   看着是红的，其实后面几十条断言一条都没跑（2026-09-27 实测踩到）。 */
+ok(escName.value === 'Esc 之前', '框里也回到原值，没留着她打了一半的那串');
+ok($('toast').textContent !== '已保存', 'Esc 什么都没存，不该弹「已保存」：' + $('toast').textContent);
+
+/* Tab 跳走 = 失焦 = 存。这条同时是上面两条的地基：假 DOM 里要是没有
+   「失焦补 change」这个行为，Enter / Esc 那两条断言就是空转的。 */
+const tbName = escName;   // 接着用上面那个节点：Esc 没写库、没重画，还是同一个
+tbName.focus();
+tbName.value = 'Tab 跳走时存下的';
+tbName.blur(); await tick(); await tick();
+ok(DB.tasks.find((t) => t.id === 't1').title === 'Tab 跳走时存下的',
+  'Tab 跳到下一格时也存了（靠失焦补的那个 change）');
+
 /* 收尾：按 id 把三个字段还原，别影响后面的用例（「学完线性代数」这个名字
    下面几十条断言都要用它找） */
 Object.assign(DB.tasks.find((t) => t.id === 't1'), t1keep);
@@ -838,6 +889,8 @@ async function addCd(title, due) {
   $('cd-add').fire('click');
   await tick(); await tick(); await tick();
 }
+/* 「加完光标回到标题框」要拿加之前后比 —— focusCount 是累计的 */
+const fc0 = $('cd-title').focusCount || 0;
 await addCd('临时·明天要交的', isoOff(1));
 ok(daysActive() === active0,
   '只加一个截止日，那天**不**算成「有记录的一天」：' + active0 + ' → ' + daysActive());
@@ -852,6 +905,36 @@ ok(gNew.period_start === isoOff(0),
 ok(gNew.target === 1 && gNew.progress === 0 && gNew.done === false,
   '其余占位列：target 1 / progress 0 / 未完成');
 ok($('cd-title').value === '', '加完把标题输入框清掉，方便接着加下一条');
+/* 连着录十条不该去够十次鼠标：加完光标得自己回到标题框 */
+ok(($('cd-title').focusCount || 0) === fc0 + 1,
+  '加完把光标送回标题框（能一路敲下去）：' + fc0 + ' → ' + ($('cd-title').focusCount || 0));
+
+/* ── 截止日的四个快捷按钮 ──
+   点开日历控件翻到「下周一」要 5 次操作，点一下按钮是 1 次。
+   「今天 / 明天」能对死值；「本周末 / 下周一」不能照实现再算一遍期望值 ——
+   两边一起错就测不出来，所以改成断言**性质**：那天真的是周六 / 周一吗、落在合理天数内吗。 */
+const dowOf = (iso) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d).getDay(); };
+const gapFromToday = (iso) => Math.round(
+  (new Date(iso + 'T00:00:00') - new Date(isoOff(0) + 'T00:00:00')) / 86400000);
+$('cd-due').value = '';
+$('cd-today').fire('click'); await tick();
+ok($('cd-due').value === isoOff(0), '点「今天」填今天：' + $('cd-due').value);
+$('cd-tomorrow').fire('click'); await tick();
+ok($('cd-due').value === isoOff(1), '点「明天」填明天：' + $('cd-due').value);
+$('cd-weekend').fire('click'); await tick();
+ok(dowOf($('cd-due').value) === 6,
+  '点「本周末」给的是周六（算出来星期 ' + dowOf($('cd-due').value) + '）：' + $('cd-due').value);
+ok(gapFromToday($('cd-due').value) >= 0 && gapFromToday($('cd-due').value) <= 6,
+  '而且就在本周之内（差 ' + gapFromToday($('cd-due').value) + ' 天）');
+$('cd-nextmon').fire('click'); await tick();
+ok(dowOf($('cd-due').value) === 1,
+  '点「下周一」给的是周一（算出来星期 ' + dowOf($('cd-due').value) + '）：' + $('cd-due').value);
+ok(gapFromToday($('cd-due').value) >= 1 && gapFromToday($('cd-due').value) <= 7,
+  '而且是**下一个**周一（差 ' + gapFromToday($('cd-due').value) + ' 天；今天就是周一的话要给 7 天后）');
+/* 快捷按钮只管填值，不写库 —— 没点「加上」之前不该多出任何一行 */
+ok(!DB.goals.some((g) => g.due_date === $('cd-due').value && !g.title),
+  '点快捷按钮只填日期框，不会凭空写一行进库');
+$('cd-due').value = isoOff(7);   // 还回默认值，别影响后面的用例
 
 /* 同一天到期两件事：格子里放不下两个「截」，要压成「截×2」 */
 await addCd('临时·同天到期的另一件', isoOff(1));
@@ -2244,7 +2327,7 @@ $('mt-text').value = '   ';
 const nMt2 = DB.mottos.length;
 $('mt-add').fire('click'); await tick(); await tick();
 ok(DB.mottos.length === nMt2, '校训空着不写库');
-ok($('toast').textContent.includes('先写一句校训'), '并且说清楚要先写内容：' + $('toast').textContent);
+ok($('toast').textContent.includes('先写一句话'), '并且说清楚要先写内容：' + $('toast').textContent);
 $('mt-text').value = '';
 
 /* 改一条：走 update，不能多出一行 */

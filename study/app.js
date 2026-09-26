@@ -171,6 +171,23 @@
     const dt = new Date(y, m - 1, d + n);
     return dt.getFullYear() + '-' + pad(dt.getMonth() + 1) + '-' + pad(dt.getDate());
   }
+  /* 从今天往后数到最近的星期 dow（0=周日 … 6=周六）。
+     skipToday=true 时「就是今天」也算下一个 —— 「下周一」在周一那天不该给出今天。
+     用 new Date(y, m-1, d) 构造本地日期：'YYYY-MM-DD' 直接丢进 new Date()
+     是按 UTC 解析的，晚上八点后算出来会差一天。 */
+  function nextDow(dow, skipToday) {
+    const [y, m, d] = today().split('-').map(Number);
+    let delta = (dow - new Date(y, m - 1, d).getDay() + 7) % 7;
+    if (!delta && skipToday) delta = 7;
+    return addDays(today(), delta);
+  }
+  /* 倒计时新建表单上那四个快捷按钮各填哪一天（周六 = 6，周一 = 1）。 */
+  const QUICK_DUE = {
+    'cd-today':    () => today(),
+    'cd-tomorrow': () => addDays(today(), 1),
+    'cd-weekend':  () => nextDow(6, false),
+    'cd-nextmon':  () => nextDow(1, true),
+  };
   function daysFromToday(iso) {
     if (!iso) return null;
     const [y, m, d] = iso.split('-').map(Number);
@@ -764,8 +781,11 @@
     return MWORDS.map((p) => ({ id: '', school: p[0], text: p[1] }));
   }
 
-  /* 一条校训的显示格式：「博学而笃志，切问而近思」 · 复旦大学
-     学校名可以空着（她只想加一句话也行），那就只显示引号里那句。 */
+  /* 一条的显示格式：「博学而笃志，切问而近思」 · 复旦大学
+     摘抄走同一个格式，出处那格写书名 / 作者就行。
+     **不加「类型」字段**（校训 / 摘抄）：显示上本来就分得开（学校名 vs 书名），
+     多一列只会多一个填错的入口。
+     出处可以空着（她只想加一句话也行），那就只显示引号里那句。 */
   const mottoText = (m) => '「' + m.text + '」' + (m.school ? ' · ' + m.school : '');
 
   /* 抽一条来显示。**不是每次渲染都重抽** —— renderCurrent() 每改一个字段都会被调，
@@ -1111,10 +1131,21 @@
      emptyMsg：空值时弹这句并且不写库；传 null 表示这个字段允许空着。
        空值那一支是**把框里的值写回原值**，不是重画 —— 重画会把光标踢出去，
        而这里她十有八九是手滑清空了、正要接着改；把旧值还回去就够了。 */
+  /* 三个键位（行内编辑的标配，少一个都会让人卡住）：
+     Enter = 存；Esc = 还原；Tab = 浏览器默认的「跳到下一个可聚焦元素」——
+     跳走时也会补一个 change，所以 Tab 那一支不用自己写。
+     前两个都靠 blur() 收尾：change 只在「值跟聚焦时不一样」时才发，
+     所以 Esc 把原值写回去再 blur，库里一次请求都不会发（不是「发了再撤回」）。 */
+  const editKeys = (rec, key) => (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
+    else if (e.key === 'Escape') { e.target.value = rec[key] || ''; e.target.blur(); }
+  };
+
   function inlineText(rec, table, key, placeholder, redraw, emptyMsg) {
     return h('input', {
       class: 'inline', type: 'text', value: rec[key] || '', placeholder: placeholder,
-      title: '点一下就能改，改完点别处自动存',
+      title: '点一下就能改，改完点别处自动存；Enter 存，Esc 还原',
+      onkeydown: editKeys(rec, key),
       onchange: (e) => {
         const v = e.target.value.trim();
         if (!v && emptyMsg) {
@@ -1138,7 +1169,8 @@
   function inlineDate(rec, table, key, redraw) {
     return h('input', {
       class: 'inline', type: 'date', value: rec[key] || '',
-      title: '点一下改日期，会自动换到对应那一段',
+      title: '点一下改日期，会自动换到对应那一段；Enter 存，Esc 还原',
+      onkeydown: editKeys(rec, key),
       onchange: (e) => {
         const v = e.target.value;
         if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { toast('得选一个日期', true); if (redraw) redraw(); return; }
@@ -1288,6 +1320,9 @@
     resetCdForm();
     toast('加上了，' + dateText(due) + '截止');
     await refresh();
+    /* 光标送回标题框：连着录十条能一路敲下去，不用每条都去够一次鼠标。
+       滚动位置不用管 —— 这里本来就不滚（新建是往列表里插一行）。 */
+    $('cd-title').focus();
   }
 
   /* ── 月度任务视图 ──────────────────────────────────────────── */
@@ -2971,8 +3006,8 @@
     clear(box);
     if (S.mtNoTable) return;         // 表都没有，列表点了也存不下，不画
     if (!S.mottos.length) {
-      box.appendChild(emptyNote('库里一条校训都没有，现在顶上显示的是**内置的 39 条**。'
-        + '在上面加一条自己的，它就会顶掉内置那份。'));
+      box.appendChild(emptyNote('库里一条都没有，现在顶上显示的是**内置的 39 条校训**。'
+        + '在上面加一条自己的（校训或摘抄都行），它就会顶掉内置那份。'));
       return;
     }
 
@@ -2991,7 +3026,7 @@
           h('button', {
             class: 'tiny danger', text: '删除',
             onclick: async () => {
-              if (!confirm('删掉这条校训？\n\n' + m.text)) return;
+              if (!confirm('删掉这条？\n\n' + m.text)) return;
               if (S.mtNow && S.mtNow.text === m.text) S.mtNow = null;  // 删的正好是显示的那条，下次重抽
               await commit(sb.from('mottos').delete().eq('id', m.id), '删掉了');
             },
@@ -3003,9 +3038,9 @@
 
   /* 就地编辑一行。走 update 不走 insert —— insert 会多出一条。 */
   function mottoEditRow(m) {
-    const t  = h('input', { type: 'text', class: 'grow', value: m.text || '', placeholder: '校训原文' });
-    const sc = h('input', { type: 'text', value: m.school || '', placeholder: '哪所学校（可留空）',
-                            style: { maxWidth: '150px' } });
+    const t  = h('input', { type: 'text', class: 'grow', value: m.text || '', placeholder: '一句话' });
+    const sc = h('input', { type: 'text', value: m.school || '', placeholder: '出处：学校 / 书名 / 作者',
+                            style: { maxWidth: '170px' } });
     return h('div', { class: 'item' },
       h('div', { class: 't' },
         t,
@@ -3013,7 +3048,7 @@
           class: 'tiny primary', text: '保存',
           onclick: async () => {
             const text = t.value.trim();
-            if (!text) { toast('校训不能是空的', true); return; }
+            if (!text) { toast('一句话不能是空的', true); return; }
             S.mtEdit = null;
             if (S.mtNow && S.mtNow.id === m.id) S.mtNow = null;   // 显示的那条被改了，重新抽
             await commit(sb.from('mottos').update({ text: text, school: sc.value.trim() }).eq('id', m.id), '改好了');
@@ -3027,7 +3062,7 @@
 
   async function addMotto() {
     const text = $('mt-text').value.trim();
-    if (!text) { toast('先写一句校训', true); $('mt-text').focus(); return; }
+    if (!text) { toast('先写一句话', true); $('mt-text').focus(); return; }
     const school = $('mt-school').value.trim();
     const btn = $('mt-add');
     btn.disabled = true;
@@ -3404,6 +3439,13 @@
 
     $('cd-add').addEventListener('click', addCountdown);
 
+    /* 截止日的四个快捷按钮。**只填值，不抢焦点** —— 她点这个说明正定到一半，
+       这时候把光标拽回标题框是打断。（她原来是「写标题 → 翻开日历点 → 加上」，
+       现在中间那步从 5 次操作变成 1 次。） */
+    for (const [id, pick] of Object.entries(QUICK_DUE)) {
+      $(id).addEventListener('click', () => { $('cd-due').value = pick(); });
+    }
+
     $('t-add').addEventListener('click', async () => {
       const title = $('t-title').value.trim();
       if (!title) { toast('先写大任务', true); return; }
@@ -3421,6 +3463,7 @@
       else toast('已创建，拆成 ' + n + ' 个小任务');
       $('t-title').value = ''; $('t-detail').value = '';
       await refresh();
+      $('t-title').focus();       // 同上：建完一个接着建下一个
     });
 
     /* 今日完成情况：勾选 + 一个自己写两句的文本框，同一个按钮一起存。

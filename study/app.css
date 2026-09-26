@@ -154,7 +154,8 @@ button:focus-visible,summary:focus-visible,.tab:focus-visible,.chip:focus-visibl
 .item .t{font-weight:600;font-size:15px;display:flex;gap:8px;align-items:flex-start}
 .item .t .grow{flex:1;min-width:0;word-break:break-word}
 .item .d{font-size:12px;color:var(--text-secondary);margin-top:3px;word-break:break-word}
-.item .m{font-size:12px;color:var(--muted);margin-top:5px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.item .m{font-size:12px;color:var(--muted);margin-top:5px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;
+  font-variant-numeric:tabular-nums}
 .item .acts{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
 /* ── 学习资源列表：「学科 → 类型」两层分组（2026-09-26）────────────
    资源攒到十几本之后平铺着找不动，分两层之后一眼看得出哪一科堆了多少。
@@ -199,7 +200,7 @@ button:focus-visible,summary:focus-visible,.tab:focus-visible,.chip:focus-visibl
 .cd-group:last-child{margin-bottom:0}
 .cd-head{display:flex;align-items:baseline;gap:7px;margin:0 0 8px}
 .cd-head .cd-name{font-weight:700;font-size:12.5px;color:var(--text-primary)}
-.cd-head .cd-n{font-size:11px;color:var(--muted)}
+.cd-head .cd-n{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
 /* 完成区默认收起（<details> 不带 open）—— 存档不该天天占着视线。
    跟 .subs-fold 一样的手法，但字号大一点：它是一整个分区的头。 */
 .cd-fold{margin-top:4px;border-top:1px solid var(--grid);padding-top:9px}
@@ -213,6 +214,12 @@ button:focus-visible,summary:focus-visible,.tab:focus-visible,.chip:focus-visibl
 
 /* 卡片上「截止 [日期]」那一小截：日期是就地编辑的 input，跟标签排一行 */
 .item .cd-due{display:inline-flex;align-items:center;gap:5px}
+
+/* 倒计时新建表单下面那排日期快捷按钮（今天 / 明天 / 本周末 / 下周一）。
+   间距一律走 4 的倍数：随手写 5px 7px 是「说不出哪里不对但就是不整齐」的来源。 */
+.quick{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.quick .hint{margin:0}
+.quick button{padding:4px 8px}
 
 /* ── 优先级：只在左边一条 3px 色条，不铺整块背景 ──────────────────
    「优先级只给左边 3px 色条，不加整块背景」。铺底色会把「逾期红」「完成绿」
@@ -314,8 +321,11 @@ details[open] summary{margin-bottom:11px}
 /* 标签做成浅色胶囊：一层淡底，没有描边。描边式在浅底上是一圈细线，缩到 11px
    看着发虚；淡底更像「标签」，跟正文分得开。（去掉 border 后 padding 各 +1px，
    高度和宽度跟原来一样。） */
+/* 药丸里有「还剩 3 天」「3 / 5」这类数字，等宽字形让它们在位数变化时不左右跳
+   （「9 天」→「10 天」多一位，比例字形会把整颗药丸撑宽、旁边的东西跟着挪）。 */
 .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;
-  background:var(--chip);color:var(--text-secondary);white-space:nowrap}
+  background:var(--chip);color:var(--text-secondary);white-space:nowrap;
+  font-variant-numeric:tabular-nums}
 /* 完成 / 逾期：语义由**底色**承担，字仍走主文字色。
    不染字是因为同色字压同色淡底实测达不到 AA —— 浅色 20% 底上红字只有 3.23:1、
    深色只有 2.61:1；黄更极端（当字 1.84:1）。check-contrast.mjs 有守卫拦这个错法。
