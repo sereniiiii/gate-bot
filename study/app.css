@@ -437,6 +437,12 @@ details[open] summary{margin-bottom:11px}
 .chip.done{opacity:.72}
 /* 划掉 + 用 secondary 而不是 muted：muted 在浅色底上只有 3.50:1，不到 AA */
 .chip.done .ct{text-decoration:line-through;color:var(--text-secondary)}
+/* 勾不动的 chip（已经完成的那几条）：不给 pointer，别让人以为点了会有反应。
+   压暗交给上面的 .chip.done —— 这两条总是同时出现 */
+.chip[disabled]{cursor:default}
+/* 还没拆出步骤 / 章节的父项：压暗但**不划掉**（划掉是「做完了」的意思，它会误导）。
+   它照样能点，点下去按钮上会说「先去拆步 / 分章」 */
+.chip.bare{opacity:.72}
 .chip .ck{flex:0 0 auto;font-size:13px;line-height:1;color:var(--muted)}
 .chip.on .ck{color:var(--series-1)}
 .chip .ct{min-width:0;max-width:26ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -452,6 +458,13 @@ details[open] summary{margin-bottom:11px}
 .cg-label{flex:0 0 62px;font-size:11px;font-weight:600;color:var(--text-secondary);
   padding-top:8px;line-height:1.3}
 .chips-group .chips{flex:1;min-width:0}
+
+/* 勾中的父项各自的子项，一条父项一组。父项名字**单独占一行**写在前面 ——
+   多选之后会同时摊开好几组，62px 的 .cg-label 塞不下「哪一步 · 大任务名」，
+   挤在一起就分不出这几步是哪件事的了 */
+.sub-pick{margin-top:10px;padding-top:9px;border-top:1px solid var(--grid)}
+.sub-pick .sp-head{font-size:11px;font-weight:600;color:var(--text-secondary);margin-bottom:7px}
+.sub-pick .sp-head b{color:var(--text-primary);font-weight:650}
 
 /* 资源下面的章节清单：平时收起，点开才占位置。
    一屏可能有十几本书，全展开会把别的资源挤下去 */

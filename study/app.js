@@ -41,7 +41,6 @@
     { key: 'paper',  label: '自己做的试卷' },
   ];
   const EXAM_KIND_LABEL = { school: '学校考试', paper: '自己做的试卷' };
-  const GOAL_PERIOD_DAYS = 30;
 
   /* 39 所 985 高校的校训，登录页和主页随机挑一句显示。
      这是**兜底清单**：setup-8-mottos.sql 跑过之后，页面读的是库里的 mottos 表
@@ -100,15 +99,18 @@
     tab: 'home',          // 登录后落在主页
     mood: null,
     month: '',            // 月行程表显示哪个月 'YYYY-MM'，空 = 本月
-    /* 「今日完成情况」两组**各自独立**，可以同时选 —— 她问的「学习资源和大任务
-       可以同步勾选吗」。按下一次，选中的组全记掉：大任务那一步盖推进戳、资源那一章算完成。
-       doneOn[k]  这一组这次要不要记（再点一下选中的那个 = 整组不记）
-       doneRef[k] 这一组选中的父项 id
-       doneSub[k] 父项下面选中的那一步 / 那一章 id
-       默认只开大任务那一组，跟以前一样；要连带记资源自己点一下就行。 */
-    doneOn:  { task: true, res: false },
-    doneRef: { task: null, res: null },
-    doneSub: { task: null, res: null },
+    /* 「今日完成情况」两组**各自独立，而且都可以多选**（她 2026-09-26 的原话：
+       「可以勾选多个大任务或者学习资源，对应的大任务可以勾选对应做到了哪一步，
+       也可以多选；对应的学习资源可以勾选对应多少章节，也可以多选」）。
+       donePick.task / donePick.res —— 勾中的**父项**（大任务 / 学习资源）id 集合
+       doneStep —— 大任务侧勾中的**步** id 集合，一条 = 今天推进了这一步，**不算完成**
+       doneCh   —— 资源侧勾中的**章** id 集合，一条 = 把这一章勾掉，**算完成**
+       用普通对象当集合（id 是 uuid 字符串，Set 存不住也不好转 JSON）。
+       ⚠️ 两组的语义不对称是**故意的**（见 addDone 的注释），别顺手统一。
+       ⚠️ 子项一律**不预勾** —— 多选之后预勾会让按钮上「记 N 条」的 N 跟她看到的对不上。 */
+    donePick: { task: {}, res: {} },
+    doneStep: {},
+    doneCh: {},
     /* 「自己写两句」那个文本框跟着**今天**这一天走，存在 daily_logs.note 里
        （和折叠区那条「补充」是同一个字段，没有新表）。noteDay = 框里现在装的是
        哪一天的文字；noteTouched = 她动过手之后，别拿库里的旧值把正在打的字盖掉。 */
@@ -966,12 +968,14 @@
 
   function emptyNote(txt) { return h('div', { class: 'empty', text: txt }); }
 
-  /* ── 页签一：月度任务（主位：倒计时 + 月度任务视图  下面：旧的目标备忘录）──
-     这一页的主位是「几月几号要完成什么」（倒计时）和「这个月做了什么」（日历）；
-     30 天小目标（Memo）折到最底下 —— 它是月视图的一路输入，不是这一页的全部。 */
+  /* ── 页签一：月度任务（倒计时 + 月度任务视图）────────────────
+     这一页就是两块：「几月几号要完成什么」（倒计时）和「这个月做了什么」（日历）。
+     2026-09-26 她要求「30 天小目标这一栏不再保留」，于是原来折在最底下那份
+     备忘录（renderGoalMemo）连同新建表单一起撤了。
+     ⚠️ **只撤了界面，库里的 goals 行一条没删**（没有 due_date 的那些）。
+     导出快照里还在，主页动态流里「完成了 30 天目标」那些历史条目也还在。 */
   function renderGoals() {
     renderCountdown();
-    renderGoalMemo();
     renderMonth();
   }
 
@@ -1156,59 +1160,6 @@
     resetCdForm();
     toast(editing ? '改好了' : '加上了，' + dateText(due) + '截止');
     await refresh();
-  }
-
-  /* 目标备忘录：两人各自的 30 天小目标 + 进度条。
-     **只收没有 due_date 的** —— goals 表现在还装着倒计时，
-     那些行的 period_start/target/progress 只是占位，混进来会画出一条 0/1 的假进度条。 */
-  function renderGoalMemo() {
-    twoCols($('goals-cols'), S.goals.filter((g) => !g.due_date), (owner, rows, mine) => {
-      if (!rows.length) return emptyNote(mine ? '还没有目标，上面加一个。' : '对方还没添加目标。');
-      const wrap = h('div');
-      for (const g of rows) {
-        const p = pct(g.progress, g.target);
-        const end = addDays(g.period_start, GOAL_PERIOD_DAYS - 1);
-        const left = daysFromToday(end);
-        const periodTxt = left > 0 ? '周期剩 ' + left + ' 天'
-                        : left === 0 ? '周期最后一天'
-                        : '周期已过 ' + (-left) + ' 天';
-
-        wrap.appendChild(
-          h('div', { class: 'item' + (g.done ? ' done' : '') },
-            h('div', { class: 't' },
-              h('span', { class: 'grow', text: g.title }),
-              g.done ? h('span', { class: 'pill ok', text: '已完成' }) : null
-            ),
-            g.detail ? h('div', { class: 'd', text: g.detail }) : null,
-            h('div', { class: 'bar' }, h('i', { style: { width: p + '%' } })),
-            h('div', { class: 'bar-txt' },
-              h('span', { text: '进度 ' + g.progress + ' / ' + g.target }),
-              h('span', { text: periodTxt + '（到 ' + end + '）' })
-            ),
-            /* ↔ 这个目标就是大任务里的某几步 / 书里的某几章。
-               关联只做「看得出是一件事」，**不会**因为勾了一步就把 30 天目标
-               标成完成 —— 它有自己的进度计数（见 setDone 里那段注释）。 */
-            mine ? linkBar('goal', g) : null,
-            mine ? h('div', { class: 'acts' },
-              h('button', { class: 'tiny', text: '−1', onclick: () => bumpGoal(g, -1) }),
-              h('button', { class: 'tiny', text: '+1', onclick: () => bumpGoal(g, 1) }),
-              h('button', {
-                class: 'tiny',
-                text: g.done ? '取消完成' : '标记完成',
-                onclick: () => commit(
-                  setDone('goals', g.id, !g.done, { progress: !g.done ? g.target : g.progress })
-                ),
-              }),
-              h('button', {
-                class: 'tiny danger', text: '删除',
-                onclick: () => removeRow('goals', g.id, '目标「' + g.title + '」'),
-              })
-            ) : null
-          )
-        );
-      }
-      return wrap;
-    });
   }
 
   /* ── 月度任务视图 ──────────────────────────────────────────── */
@@ -1426,13 +1377,6 @@
     box.appendChild(h('div', { class: 'tblwrap' }, tbl));
   }
 
-  async function bumpGoal(g, d) {
-    const v = Math.max(0, Math.min(999999, (g.progress || 0) + d));
-    g.progress = v;
-    await quiet(sb.from('goals').update({ progress: v, done: v >= g.target ? g.done : false }).eq('id', g.id));
-    renderCurrent();
-  }
-
   /* ── 页签二：大任务拆解 ────────────────────────────────────── */
 
   /* 总览：每个大任务一条完成率横条，按人分色（颜色跟左右分栏的左边框一致）。
@@ -1639,14 +1583,44 @@
     }
   }
 
-  /* 挂到哪。chip 分两组：大任务 / 学习资源 —— **两组各自独立，可以同时选**。
-     以前是互斥的（选了资源，大任务那边自动取消），她问「学习资源和大任务可以同步
-     勾选吗」，改成各选各的：按下按钮，选中的组一次全记掉。
+  /* 挂到哪。chip 分两组：大任务 / 学习资源 —— 两组各自独立，**每组里面都可以勾好几条**。
+     她 2026-09-26 的要求：「可以勾选多个大任务或者学习资源，对应的大任务可以勾选对应
+     做到了哪一步，也可以多选；对应的学习资源可以勾选对应多少章节，也可以多选」。
+     所以**父项和子项都是多选**：
+       点父项 = 这一组加上它（再点一下 = 去掉它，连同它下面勾着的子项一起清掉）
+       点子项 = 这一条这次要记（再点一下 = 去掉这一条）
+     右侧 n/m 是这个父下面**已经完成**几件，跟以前一样 —— 挑的时候不用来回翻页。
      用 chip 而不是下拉：通常就几个，一眼看全比展开菜单快。
-     右侧 n/m 是这个父下面已经完成几件 —— 挑的时候不用来回翻页。
-     再点一下已经选中的那个 = **这一组这次不记**（整组变回 ☐）—— 只做了一件事时用。 */
+     ⚠️ 子项一律**不预勾**：以前是「选中父项就自动挑第一条没完成的」，多选之后这套会
+        让她按下去才发现记的不是想记的那条。现在父项勾上只是摊开子项，勾哪几条她自己点。
+     ⚠️ 已经完成的子项直接 disabled，不给勾 —— 勾了也只能在按下时被跳过，
+        不如一开始就让她看见「这条已经完事了」。 */
   /* 「自己写两句」那个框里现在有什么（还没存进库的也算） */
   const noteText = () => { const el = $('done-note'); return el ? el.value.trim() : ''; };
+
+  /* 勾选里可能留着**已经不存在**的 id（对方删了、刷新换了人、父项被删连带子项没了）。
+     不扫一遍的话，按钮上写着「记 3 条」，按下去只记到 2 条 —— 对不上就是骗人。 */
+  const stepBag = (kind) => (kind === 'task' ? S.doneStep : S.doneCh);
+  function pruneDonePick() {
+    for (const kind of ['task', 'res']) {
+      const rows = (kind === 'task' ? S.tasks : S.resources).filter(isMine);
+      for (const id of Object.keys(S.donePick[kind])) {
+        if (!rows.some((r) => r.id === id)) delete S.donePick[kind][id];
+      }
+    }
+    const alive = {};
+    for (const x of S.subtasks) alive[x.id] = true;
+    for (const bag of [S.doneStep, S.doneCh]) {
+      for (const id of Object.keys(bag)) if (!alive[id]) delete bag[id];
+    }
+  }
+  /* 记完 / 整组去掉之后清干净。不清的话大任务那几步 done 还是 false，
+     留着 ☑ 再按一下会把同一笔记第二遍。 */
+  function clearDonePick() {
+    S.donePick = { task: {}, res: {} };
+    S.doneStep = {};
+    S.doneCh = {};
+  }
 
   function renderDoneForm() {
     const box = $('done-picker');
@@ -1655,6 +1629,7 @@
     const plabel = $('done-picker-label');
     const tip = $('done-tip');
     clear(box);
+    pruneDonePick();
 
     const lanes = [
       ['task', '大任务', S.tasks.filter(isMine), subsOfTask],
@@ -1672,9 +1647,7 @@
 
     if (!lanes.length) {
       /* 什么都没得挂 —— 整块退回最开始的样子，以后建了东西回来就是默认状态 */
-      S.doneOn = { task: true, res: false };
-      S.doneRef = { task: null, res: null };
-      S.doneSub = { task: null, res: null };
+      clearDonePick();
       box.appendChild(h('p', { class: 'hint', style: { margin: '0' },
         text: '你还没有大任务、也没有学习资源。先去「大任务拆解」或「学习资源」建一个 —— ' +
               '完成的事要挂在某样东西下面，才能同步过去。' }));
@@ -1682,128 +1655,174 @@
       return;
     }
 
-    /* 只有一边有东西时，默认就记那一边（不然她得先点一下才有东西可选） */
-    if (lanes.length === 1) S.doneOn[lanes[0][0]] = true;
-
-    for (const [kind, , rows] of lanes) {
-      /* 选中的那个可能刚被删掉 / 或还没选过，退回这一组的第一个 */
-      if (!rows.some((r) => r.id === S.doneRef[kind])) S.doneRef[kind] = rows[0].id;
-    }
-
     for (const [kind, label, rows, subsFn] of lanes) {
-      const on = !!S.doneOn[kind];
+      const pick = S.donePick[kind];
+      const bag  = stepBag(kind);
       box.appendChild(h('div', { class: 'chips-group' },
         h('span', { class: 'cg-label', text: label }),
         h('div', { class: 'chips' },
           rows.map((r) => {
-            const sel = on && S.doneRef[kind] === r.id;
+            const on   = !!pick[r.id];
             const subs = subsFn(r.id);
-            const dn = subs.filter((x) => x.done).length;
+            const dn   = subs.filter((x) => x.done).length;
+            const nSel = subs.filter((x) => bag[x.id]).length;
             return h('button', {
               type: 'button',
-              class: 'chip' + (sel ? ' on' : ''),
-              'aria-pressed': sel ? 'true' : 'false',
-              title: sel ? '再点一下 = 这一组这次不记' : '',
+              class: 'chip' + (on ? ' on' : '') + (!subs.length ? ' bare' : ''),
+              'aria-pressed': on ? 'true' : 'false',
+              title: !subs.length ? '它下面一条都还没拆出来，先在「' + (kind === 'res' ? '学习资源' : '大任务拆解') + '」里加'
+                : on ? '再点一下 = 这一组这次不记（连同下面勾着的几条）'
+                : '点一下开始勾它下面的' + (kind === 'res' ? '章' : '步'),
               onclick: () => {
-                if (sel) S.doneOn[kind] = false;
-                else { S.doneOn[kind] = true; S.doneRef[kind] = r.id; }
+                if (on) {
+                  delete pick[r.id];
+                  /* 整组去掉时连着子项一起清 —— 只去掉父项、子项还留着 ☑ 的话，
+                     按钮上的条数会跟她看到的不一致 */
+                  for (const x of subs) delete bag[x.id];
+                } else {
+                  pick[r.id] = true;
+                }
                 renderDoneForm();
               },
             },
-              h('span', { class: 'ck', text: sel ? '☑' : '☐' }),
+              h('span', { class: 'ck', text: on ? '☑' : '☐' }),
               h('span', { class: 'ct', text: r.title || r.name || '(无标题)' }),
+              /* 这一格永远是「已完成 n / 共 m」——不跟着勾选变，免得同一个位置
+                 一会儿是完成数一会儿是选中数，看的人得每次重新猜 */
               h('span', { class: 'cn', text: dn + '/' + subs.length })
             );
           })
         )
       ));
+    }
 
-      /* 这一组选中的那条下面，这次记哪一步 / 哪一章。两组各自摊各自的那一行：
-           挂资源   = 勾哪一章（勾了就**算完成**）
-           挂大任务 = 今天推进了哪一步（**只记录，不算完成**）
-         两组语义故意不一样，所以按钮上会把「算不算完成」写清楚。 */
-      if (!on) continue;
-      const parent = rows.find((r) => r.id === S.doneRef[kind]);
-      const chs = parent ? subsFn(parent.id) : [];
-      if (!chs.length) continue;
-      if (!chs.some((x) => x.id === S.doneSub[kind])) {
-        S.doneSub[kind] = (chs.find((x) => !x.done) || chs[0]).id;
-      }
+    /* 勾中的父项各自摊一行子项 —— **一条父项一行**。多选之后会有好几组，
+       所以父项名字要单独占一行写在前面，不然两个大任务的步混在一起分不出谁是谁。
+         挂资源   = 勾哪几章（勾了就**算完成**）
+         挂大任务 = 今天推进了哪几步（**只记录，不算完成**）
+       两组语义故意不一样，所以按钮上会把「算不算完成」写清楚。 */
+    for (const [kind, , rows, subsFn] of lanes) {
+      const bag   = stepBag(kind);
       const isRes = kind === 'res';
-      box.appendChild(h('div', { class: 'chips-group' },
-        h('span', { class: 'cg-label', text: isRes ? '第几章' : '哪一步' }),
-        h('div', { class: 'chips' },
-          chs.map((x) => {
-            const sel = S.doneSub[kind] === x.id;
-            return h('button', {
-              type: 'button',
-              class: 'chip' + (sel ? ' on' : '') + (x.done ? ' done' : ''),
-              'aria-pressed': sel ? 'true' : 'false',
-              title: x.done ? (isRes ? '这一章已经勾过了' : '这一步已经完成了') : '',
-              onclick: () => { S.doneSub[kind] = x.id; renderDoneForm(); },
-            },
-              h('span', { class: 'ck', text: x.done ? '✅' : (sel ? '☑' : '☐') }),
-              h('span', { class: 'ct', text: x.title || '(未填写)' })
-            );
-          })
-        )
-      ));
+      for (const r of rows) {
+        if (!S.donePick[kind][r.id]) continue;
+        const chs = subsFn(r.id);
+        if (!chs.length) continue;
+        box.appendChild(h('div', { class: 'sub-pick' },
+          h('div', { class: 'sp-head' },
+            (isRes ? '第几章 · ' : '哪一步 · '),
+            h('b', { text: r.title || r.name || '(无标题)' }),
+            '（可以勾好几条，再点一下取消）'),
+          h('div', { class: 'chips' },
+            chs.map((x) => {
+              const sel = !!bag[x.id];
+              return h('button', {
+                type: 'button',
+                class: 'chip' + (sel ? ' on' : '') + (x.done ? ' done' : ''),
+                'aria-pressed': sel ? 'true' : 'false',
+                disabled: x.done ? true : null,
+                title: x.done ? (isRes ? '这一章已经勾过了' : '这一步已经完成了')
+                              : sel ? '再点一下 = 这条这次不记' : '点一下勾上这条',
+                onclick: () => {
+                  if (sel) delete bag[x.id]; else bag[x.id] = true;
+                  renderDoneForm();
+                },
+              },
+                h('span', { class: 'ck', text: x.done ? '✅' : (sel ? '☑' : '☐') }),
+                h('span', { class: 'ct', text: x.title || '(未填写)' })
+              );
+            })
+          )
+        ));
+      }
     }
 
     /* 这一页没有自由文本框了。以前大任务是「写一条 → 凭空新建一条已完成的小任务」，
        会越记越长、分母越来越大，而且替她宣布了「完成」—— 她明确说不要。
-       现在两种模式都是「选一个父项、选其中一条」，小任务该在「大任务拆解」里拆、在那里勾。 */
+       现在两种模式都是「选父项、再选其中几条」，小任务该在「大任务拆解」里拆、在那里勾。 */
 
-    /* 按钮上写清楚这一下会记几条、算不算完成 —— 省得她猜 */
-    const plan = [];      // 这次真要记的组
-    const stuck = [];     // 勾了但记不了的组（大任务还没拆步 / 这本书还没分章）
+    /* 把这次真正会写进库的条目先算出来，按钮上写清楚这一下会记几条、算不算完成 —— 省得她猜 */
+    const plan    = [];   // 真要记的：{ kind, sub }
+    const noChild = [];   // 勾了父项，但它下面一条都还没拆出来
+    const noStep  = [];   // 勾了父项、也拆了条，但一条都没挑
+    const allDone = [];   // 勾了父项，它下面的条**全都已经完成**了（这里没什么可记的）
     for (const [kind, , rows, subsFn] of lanes) {
-      if (!S.doneOn[kind]) continue;
-      const parent = rows.find((r) => r.id === S.doneRef[kind]);
-      if (!parent) continue;
-      if (subsFn(parent.id).length) plan.push(kind); else stuck.push(kind);
+      const bag = stepBag(kind);
+      for (const r of rows) {
+        if (!S.donePick[kind][r.id]) continue;
+        const chs = subsFn(r.id);
+        if (!chs.length) { noChild.push(kind); continue; }
+        let picked = 0;
+        for (const x of chs) {
+          if (!bag[x.id] || x.done) continue;   // 已完成的勾不上（上面 disabled 了），这里再挡一道
+          picked++;
+          plan.push({ kind, sub: x });
+        }
+        /* 「没挑」和「没得挑」是两回事：全都完成了的话，让她去点子项是白指路 */
+        if (!picked) (chs.every((x) => x.done) ? allDone : noStep).push(kind);
+      }
     }
+    const nTask = plan.filter((j) => j.kind === 'task').length;
+    const nRes  = plan.filter((j) => j.kind === 'res').length;
+    const has   = !!noteText();
 
-    plabel.textContent = '这次要记什么（两组可以同时选）';
-    lead.textContent = '两组可以只选一组，也可以各选一条同时记 —— 都选就一次记完。' +
-      '大任务那一步只记一笔「今天推进了」，不算完成；资源那一章勾掉就算完成。' +
-      '下面那个文本框是写给自己看的，跟同一笔记一起存。';
+    plabel.textContent = '这次要记什么（大任务和资源都可以勾好几条）';
+    lead.textContent = '大任务、学习资源都能勾好几条；点开它，再勾它下面具体做到了哪几步 / 哪几章，' +
+      '也可以一条一条换着勾。大任务那几步只记一笔「今天推进了」，不算完成；' +
+      '资源那几章勾掉就算完成。下面那个文本框是写给自己看的，跟这笔记一起存。';
 
     if (!plan.length) {
-      if (stuck.length) {
-        const isRes = stuck[0] === 'res';
-        const has = !!noteText();
+      /* 没有任何一条能记。分三种卡住的原因，各自说清点哪儿 ——
+         多选之后可能两组同时卡住，所以两种原因可以**同时**出现，得一起说出来。 */
+      const both = (arr) => arr.includes('task') && arr.includes('res');
+      const who  = (arr) => (both(arr) ? '大任务和资源' : arr.includes('task') ? '大任务' : '资源');
+      const name = who(noStep.concat(noChild, allDone));
+      if (noStep.length || noChild.length || allDone.length) {
+        /* 三种原因按「最该先做的」排序说：先挑具体哪一条（最容易漏），
+           再是「一条都还没拆」，最后是「全都完事了、不用再记」。 */
         btn.disabled = !has;
         btn.textContent = has ? '只记这段文字（今天）'
-          : isRes ? '这本书还没分章' : '这个大任务还没拆步';
-        tip.textContent = (isRes ? '先去「学习资源」里给它「＋ 分章」'
-                                 : '先去「大任务拆解」把它拆成几步，再回来记推进') +
-          (has ? ' —— 现在按下去只存文字' : '');
-      } else if (noteText()) {
+          : noStep.length ? '还没挑具体哪' + (name === '资源' ? '一章' : name === '大任务' ? '一步' : '一步 / 一章')
+          : noChild.length ? (name === '资源' ? '这本书还没分章' : '这个大任务还没拆步')
+          : '这一项已经都完事了';
+        const how = noStep.length
+          ? '上面勾着的「' + name + '」还没挑具体哪一条：' +
+            (name === '资源' ? '去它下面点一章或多章'
+              : name === '大任务' ? '去它下面点一步或多步'
+              : '大任务那边点一步或多步，资源那边点一章或多章')
+          : noChild.length
+            ? (name === '资源' ? '先去「学习资源」里给它「＋ 分章」'
+                               : '先去「大任务拆解」把它拆成几步，再回来记推进')
+            : '上面勾着的「' + name + '」下面已经一条不剩了，不用再记 —— 想加新的就去它那儿加一条';
+        tip.textContent = how + '。' +
+          (noStep.length && noChild.length ? '（还有勾着的没拆出步骤 / 章节，这次跳过。）' : '') +
+          (has ? '现在按下去只存文字。' : '');
+      } else if (has) {
         btn.disabled = false;
         btn.textContent = '只记这段文字（今天）';
         tip.textContent = '就存这段字，不动任何进度条。想顺手勾一条，点上面的大任务或学习资源';
       } else {
         btn.disabled = true;
         btn.textContent = '先选一样要记的';
-        tip.textContent = '点上面的大任务或学习资源 —— 再点一下选中的那个，就是这组这次不记';
+        tip.textContent = '点上面的大任务或学习资源；勾上之后再点它下面的步 / 章，勾几条都行';
       }
       return;
     }
 
     btn.disabled = false;
-    const both = plan.length === 2;
-    const plusNote = noteText() ? '（连文字一起存）' : '';
-    btn.textContent = (both ? '两样一起记：推进这一步 + 勾掉这一章'
-      : plan[0] === 'res' ? '勾掉这一章（算完成）'
-      : '只记一笔：今天推进了这一步') + plusNote;
-    tip.textContent = both
-      ? '大任务那一步只记一笔推进（还不算完成）；这一章勾掉就算完成'
-      : plan[0] === 'res'
-        ? '勾完，这本书的章节进度条和「月度任务」那张日历立刻跟着变'
-        : '只记录今天动过它，进度条不动 —— 真做完了去「大任务拆解」自己勾';
+    const parts = [];
+    if (nTask) parts.push('推进 ' + nTask + ' 步');
+    if (nRes)  parts.push('勾掉 ' + nRes + ' 章');
+    btn.textContent = '记下：' + parts.join(' + ') + (has ? '（连文字一起存）' : '');
+    tip.textContent =
+      (nTask && nRes ? '大任务那 ' + nTask + ' 步只记一笔推进（还不算完成）；这 ' + nRes + ' 章勾掉就算完成。'
+       : nTask ? (nTask > 1 ? '这 ' + nTask + ' 步只记一笔「今天推进了」，进度条不动 —— 真做完了去「大任务拆解」自己勾。'
+                            : '只记录今天动过它，进度条不动 —— 真做完了去「大任务拆解」自己勾。')
+       : '勾完就算完成 —— 这本书的章节进度条和「月度任务」那张日历立刻跟着变。')
+      + (noStep.length ? '（有几项勾着但还没挑具体哪一条，这次不会记它们。）' : '')
+      + (noChild.length ? '（有几项还没拆出步骤 / 章节，这次跳过。）' : '')
+      + (allDone.length ? '（有几项勾着的已经全都完事了，没有什么可记。）' : '');
   }
-
   /* 今天完成的事 —— 直接来自 subtasks，谁的都列出来。
      不新开一张表：完成的事本来就是大任务的小任务，复用同一份数据才不会两处对不上。 */
   function renderDoneList() {
@@ -1875,51 +1894,64 @@
     }, { everyone: true });
   }
 
-  /* 记一笔。两组都勾了就**一次记两条**（她问的「学习资源和大任务可以同步勾选吗」）。
+  /* 记一笔。勾了几条就**一次记几条** —— 大任务和资源可以混着勾，每组内部也能勾好几条。
      两组语义**故意不一样**，是她明确要求的：
-       大任务 —— 只给选中的那一步盖今天的时间戳，**不改完成状态**。
+       大任务 —— 给勾中的那几步**各盖一个今天的时间戳**，**不改完成状态**。
                  真做完了要她自己去「大任务拆解」勾（原话：
                  「不要勾选后就默认大任务的某个阶段完成了」）。
-       资源   —— 把选中的那一章勾掉，那就算完成（书就那么几章，不该越读越多）。
-     一组失败就停在那里报错，不会闷声只记一半。 */
+       资源   —— 把勾中的那几章勾掉，那就算完成（书就那么几章，不该越读越多）。
+     一条失败就停在那里报错，不会闷声只记一半。 */
   async function addDone() {
     const btn = $('done-btn');
     const jobs = [];      // 这次要记的
-    const blocked = [];   // 勾了但记不了的（已经完成过），拿第一条告诉她
+    const blocked = [];   // 勾了但记不了的（刚好已经不是待办了），拿第一条告诉她
     const t = today();
     const note = noteText();   // 「自己写两句」那个框，跟这一笔记一起存
-    if (S.doneOn.task) {
-      const task = S.tasks.find((x) => x.id === S.doneRef.task && isMine(x));
-      const step = task ? subsOfTask(task.id).find((x) => x.id === S.doneSub.task) : null;
-      if (!task || !step) { toast('先在上面勾一个它属于哪个大任务', true); return; }
-      if (step.done) blocked.push('「' + (step.title || '这一步') + '」已经完成了，不用再记推进');
-      else jobs.push({ kind: 'task', task, sub: step });
-    }
 
-    if (S.doneOn.res) {
-      const r = S.resources.find((x) => x.id === S.doneRef.res && isMine(x));
-      const ch = r ? subsOfRes(r.id).find((x) => x.id === S.doneSub.res) : null;
-      if (!r || !ch) { toast('先在上面选一本书 / 一门课', true); return; }
-      if (ch.done) blocked.push('「' + (ch.title || '这一章') + '」已经勾过了');
-      else jobs.push({ kind: 'res', res: r, sub: ch });
+    /* 从**勾中的子项**反推父项，不单独存父项 —— 勾选状态只有一份，不会两处对不上 */
+    for (const kind of ['task', 'res']) {
+      const bag  = stepBag(kind);
+      const rows = kind === 'task' ? S.tasks : S.resources;
+      for (const id of Object.keys(S.donePick[kind])) {
+        const parent = rows.find((x) => x.id === id && isMine(x));
+        if (!parent) continue;      // 刚被删了，跳过（pruneDonePick 下次也会扫掉）
+        const subs = kind === 'task' ? subsOfTask(parent.id) : subsOfRes(parent.id);
+        for (const sub of subs) {
+          if (!bag[sub.id]) continue;
+          /* 渲染时已完成的 chip 是 disabled 的，正常点不到；能走到这儿说明库里
+             刚被别处改成完成了（实时同步）。跳过但**说出来**，不闷声吞掉。 */
+          if (sub.done) {
+            blocked.push('「' + (sub.title || (kind === 'res' ? '这一章' : '这一步')) + '」已经完成了，不用再记');
+            continue;
+          }
+          jobs.push({ kind, sub });
+        }
+      }
     }
 
     /* 光写字、什么都没勾也是合法的一次记录 —— 只存文字，不动任何进度条 */
     if (!jobs.length && !note) {
-      toast(blocked.length ? blocked[0] : '先在上面选一样要记的，或者写两句也行', true);
+      toast(blocked.length ? blocked[0] : '先在上面勾一样要记的，或者写两句也行', true);
       return;
     }
 
     btn.disabled = true;
+    let failed = null;
     for (const j of jobs) {
       const { error } = j.kind === 'res'
         ? await setDone('subtasks', j.sub.id, true)
         : await stampStep(j.sub.id);
-      if (error) {
-        btn.disabled = false;
-        toast('没记上：' + (j.kind === 'res' ? schemaWarn(error) : error.message), true);
-        return;
-      }
+      if (error) { failed = { j, error }; break; }
+    }
+
+    /* 记完（或中途出错）都把勾清掉：大任务那几步 done 还是 false，留着 ☑ 再按一下
+       会把同一笔记第二遍；资源那几章 refresh 之后会显示成已完成，也不该还勾着。 */
+    clearDonePick();
+    if (failed) {
+      btn.disabled = false;
+      toast('没记上：' + (failed.j.kind === 'res' ? schemaWarn(failed.error) : failed.error.message), true);
+      await refresh();
+      return;
     }
 
     /* 文字落在 daily_logs.note（今天那一行），和折叠区那条「补充」是同一个字段。
@@ -1941,15 +1973,18 @@
     }
     btn.disabled = false;
 
-    const said = jobs.map((j) => j.kind === 'res'
-      ? '勾掉了「' + (j.sub.title || '这一章') + '」'
-      : '今天推进了「' + (j.sub.title || '这一步') + '」');
-    if (noteSaved) said.push('存下了你写的两句话');
-    const hasStep = jobs.some((j) => j.kind === 'task');
+    /* 条数按**实际记成的**说 —— 勾了 5 条、其中 1 条轮不到，就说 4 条，不把跳过的那条算进去 */
+    const nRes  = jobs.filter((j) => j.kind === 'res').length;
+    const nTask = jobs.length - nRes;
+    const bits = [];
+    if (nTask) bits.push('今天推进了 ' + nTask + ' 步（还没算完成）');
+    if (nRes)  bits.push('勾掉了 ' + nRes + ' 章（算完成）');
+    if (noteSaved) bits.push('存下了你写的两句话');
     const tied = jobs.filter((j) => peersOfSub(j.sub).length).length;
-    toast((jobs.length ? '记下了：' + said.join('，') + '。' : '存下了。') +
-      (hasStep ? '大任务那一步还没算完成 —— 真做完了去「大任务拆解」勾上它。' : '') +
-      (tied ? '它关联着的那几条也跟着变了。' : '') +
+    toast((bits.length ? '记下了：' + bits.join('，') + '。' : '这段字今天本来就在库里，没重复存。') +
+      (nTask ? (nTask > 1 ? ' 那 ' + nTask + ' 步在「大任务拆解」里都还是待办，真做完了自己去勾。'
+                          : ' 那一步在「大任务拆解」里还是待办，真做完了自己去勾。') : '') +
+      (tied ? ' 它关联着的那几条也跟着变了。' : '') +
       (blocked.length ? '（' + blocked[0] + '）' : ''));
     S.noteTouched = false;   // 存过了，之后 refresh 再用库里的值对齐
     await refresh();
@@ -2850,18 +2885,16 @@
       const mine    = !!S.me && id === S.me.id;
       const g       = S.goals.filter((x) => x.owner === id);
       /* goals 表现在装两种东西：有截止日的 = 倒计时，没有的 = 以前的 30 天小目标。
-         分开算 —— 倒计时行的 progress 永远是 0/1，混进「累计」会把进度压得没法看。 */
+         卡片上只数前者（2026-09-26 之后 30 天小目标不再出现在界面里），
+         没有 due_date 的那些行照样在库里躺着，只是不往这里算。 */
       const cd      = g.filter((x) => x.due_date);
       const cdOpen  = cd.filter((x) => !x.done);
       const cdNext  = cdOpen.slice().sort((a, b) => (a.due_date < b.due_date ? -1 : 1))[0];
-      const gOld    = g.filter((x) => !x.due_date);
       const t       = S.tasks.filter((x) => x.owner === id);
       const subs    = S.subtasks.filter((x) => x.owner === id);
       const subDone = subs.filter((x) => x.done).length;
       const r       = S.resources.filter((x) => x.owner === id);
       const log     = S.daily.find((x) => x.owner === id && x.log_date === today());
-      const gProg   = gOld.reduce((n, x) => n + (x.progress || 0), 0);
-      const gTarget = gOld.reduce((n, x) => n + (x.target || 0), 0);
 
       box.appendChild(h('div', { class: 'pcard ' + (mine ? 'me' : 'other') },
         h('div', { class: 'pc-head' },
@@ -2884,9 +2917,6 @@
             cdNext ? '最急的 ' + dateText(cdNext.due_date) + ' · ' +
                      cdLeftText(daysFromToday(cdNext.due_date))
                    : cd.length ? '全部完成' : ''),
-          pcRow('30 天小目标',
-            gOld.length ? gOld.filter((x) => x.done).length + ' / ' + gOld.length + ' 个完成' : '还没建',
-            gOld.length ? '累计 ' + gProg + ' / ' + gTarget : ''),
           pcRow('大任务',
             t.length ? t.length + ' 个' : '还没建',
             subs.length ? '小任务 ' + subDone + ' / ' + subs.length : ''),
@@ -2967,19 +2997,6 @@
     $('cd-add').addEventListener('click', addCountdown);
     $('cd-cancel').addEventListener('click', () => { resetCdForm(); toast('没改，表单已清空'); });
 
-    $('g-add').addEventListener('click', async () => {
-      const title = $('g-title').value.trim();
-      if (!title) { toast('先写目标', true); return; }
-      const ok = await commit(sb.from('goals').insert({
-        owner: S.me.id,
-        period_start: $('g-start').value || today(),
-        title: title,
-        detail: $('g-detail').value.trim(),
-        target: Math.max(1, Number($('g-target').value) || 1),
-        progress: 0,
-      }), '已添加');
-      if (ok) { $('g-title').value = ''; $('g-detail').value = ''; }
-    });
 
     $('t-add').addEventListener('click', async () => {
       const title = $('t-title').value.trim();
@@ -3228,7 +3245,6 @@
     $('view-app').hidden = false;
     $('whoami').textContent = (user.email || '') + ' · 已登录';
     pickMotto();   // 库里那份读到之后，池子换了一茬，这里会跟着换成库里的
-    if (!$('g-start').value) $('g-start').value = today();
     if (!$('d-date').value)  $('d-date').value  = today();
     paintMeAvatar();
     /* 订阅要等 loadAll 之后 —— 得先知道 exams 表在不在，才决定订不订它。
@@ -3264,7 +3280,6 @@
 
     bindUI();
     $('d-date').value = today();
-    $('g-start').value = today();
     setMood(null);
 
     $('login-form').addEventListener('submit', async (e) => {
