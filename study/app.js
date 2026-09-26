@@ -130,7 +130,11 @@
     /* 倒计时。条目就是 goals 表里 due_date 非空的行（不新开表，见 setup-7-countdown.sql）。
        cdNoCol = 库里还没有 due_date 那一列时置位（setup-7 跑之前）。 */
     cdNoCol: false,
-    cdEdit: null,         // 正在改的那条倒计时的 id，null = 上面那个表单是「新建」
+    /* priNoCol = 库里还没有 priority 那一列（setup-11 跑之前）。
+       那一列是加分项，没有它只是不显示「优先级」那个下拉，别的照常用。 */
+    priNoCol: true,
+    /* 倒计时跟学习资源一样**没有**编辑态 —— 标题 / 说明 / 截止日就是卡片上的
+       输入框，改完失焦自动存（见 cdRow 里的 patch）。上面那张表单只管新建。 */
     /* 学习资源**没有**编辑态 —— 名称 / 平台 / 学科就是卡片上的输入框，
        改完失焦自动存（见 resRow 里的 patch）。上面那张表单只管新建。 */
     /* 校训。两个人的共同装饰，不按 owner 分（见 setup-8-mottos.sql）。
@@ -622,15 +626,17 @@
       S.profileMap[p.id] = p.display_name;
       S.avatarMap[p.id]  = p.avatar || '';
     });
-    S.goals     = res[1].data || [];
-    S.tasks     = res[2].data || [];
-    S.subtasks  = res[3].data || [];
-    S.daily     = res[4].data || [];
-    S.resources = res[5].data || [];
+    /* 都过一遍 live()：还在「5 秒撤回窗口」里的行不能因为一次刷新又冒回来 */
+    S.goals     = live(res[1].data);
+    S.tasks     = live(res[2].data);
+    S.subtasks  = live(res[3].data);
+    S.daily     = live(res[4].data);
+    S.resources = live(res[5].data);
     /* 倒计时的 due_date 搭 goals 这条车就回来了，不用多发一次请求：
        列在的话 select('*') 会把 due_date 带出来（值是 null 也带 key）。
        一行目标都没有时判断不了 —— 那就等真去写的时候报错再说（schemaWarn）。 */
     S.cdNoCol = S.goals.length > 0 && !S.goals.some((g) => 'due_date' in g);
+    await loadPriorityCol();    // 同上，但这一列是加分项，探测一次更准（见函数注释）
     await loadExams();          // 单独一条，失败不影响上面任何一张表
     await loadMottos();         // 同上：校训表没建也不能连累谁
     await loadLinks();          // 同上：关联表没建就退回旧的一对一
@@ -640,6 +646,17 @@
        库里明明有校训，页面却一直显示内置那条。
        pickMotto() 在「池子里还有当前这条」时不会换，所以反复刷也稳定。 */
     pickMotto();
+  }
+
+  /* priority 这一列在不在（setup-11-priority.sql 跑没跑）。
+     单独去问一次，不靠「行里带不带这个 key」猜 —— goals 一行都没有时猜不出来，
+     而那种情况恰恰是第一次用、最需要知道那个下拉该不该出现的时候。
+     列不存在时这里只报一次错，不连累别的表（跟 loadExams 一个路子）。
+     不确定的时候宁可**不显示**下拉：显示了、她选完、插入却整个失败，
+     那就成了「因为标了个优先级，任务反而加不上了」。 */
+  async function loadPriorityCol() {
+    const r = await sb.from('goals').select('priority').limit(1);
+    S.priNoCol = !!r.error;
   }
 
   /* 考试成绩**不能塞进上面那个 Promise.all** —— 那个数组里任何一条报错，
@@ -654,7 +671,7 @@
       return false;
     }
     S.exNoTable = false;
-    S.exams = r.data || [];
+    S.exams = live(r.data);      // 同上：撤回窗口里删掉的考试不能刷新一下又回来
     return true;
   }
 
@@ -998,11 +1015,8 @@
       warn.textContent = '库里还没有「截止日」这一列（due_date）。去 Supabase 后台 → SQL Editor，'
         + '跑一次 study/setup-7-countdown.sql，再回来点「刷新」。在那之前这一页存不了倒计时。';
     }
-    /* 正在改的那条被别人删了（另一台设备 / 另一个页签）→ 表单退回「新建」。
-       不这样兜一下的话，按「保存修改」会 update 到 0 行，页面看着像保存成功了、
-       其实什么也没发生。 */
-    if (S.cdEdit && !S.goals.some((g) => g.id === S.cdEdit)) resetCdForm();
     if (!$('cd-due').value) $('cd-due').value = addDays(today(), 7);
+    $('cd-pri').hidden = S.priNoCol;
 
     const all = S.goals.filter((g) => g.due_date);
     const open = all.filter((g) => !g.done);
@@ -1032,71 +1046,191 @@
           ? '你还没有倒计时任务，上面加一个（填标题 + 截止日就行）。'
           : '对方还没添加倒计时任务。');
       }
-      const todo = list.filter((g) => !g.done)
-        .sort((a, b) => (a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : 0));
+      const wrap = h('div');
+      for (const g of cdBuckets(list)) {
+        wrap.appendChild(cdSection(g, mine));
+      }
       const done = list.filter((g) => g.done)
         .sort((a, b) => String(b.done_at || '').localeCompare(String(a.done_at || '')));
-
-      const wrap = h('div');
-      for (const g of todo) {
-        const n = daysFromToday(g.due_date);
-        wrap.appendChild(
-          h('div', { class: 'item' },
-            h('div', { class: 't' },
-              h('span', { class: 'grow', text: g.title }),
-              cdPill(n)
-            ),
-            g.detail ? h('div', { class: 'd', text: g.detail }) : null,
-            h('div', { class: 'bar-txt' },
-              h('span', { text: '截止 ' + dateText(g.due_date) })
-            ),
-            mine ? h('div', { class: 'acts' },
-              h('button', { class: 'tiny', text: '改', onclick: () => editCountdown(g) }),
-              h('button', {
-                class: 'tiny', text: '完成',
-                onclick: () => commit(
-                  setDone('goals', g.id, true, { progress: g.target || 1 }),
-                  '完成了倒计时任务「' + (g.title || '') + '」'),
-              }),
-              h('button', {
-                class: 'tiny danger', text: '删除',
-                onclick: () => removeRow('goals', g.id, '倒计时任务「' + g.title + '」'),
-              })
-            ) : null
-          )
-        );
-      }
-      if (done.length) {
-        wrap.appendChild(h('div', { class: 'cd-sep', text: '已完成' }));
-        for (const g of done) {
-          wrap.appendChild(
-            h('div', { class: 'item done' },
-              h('div', { class: 't' },
-                h('span', { class: 'grow', text: g.title }),
-                h('span', { class: 'pill ok', text: '已完成' })
-              ),
-              g.detail ? h('div', { class: 'd', text: g.detail }) : null,
-              h('div', { class: 'bar-txt' },
-                h('span', { text: '截止 ' + dateText(g.due_date) +
-                  (g.done_at ? '，' + isoDate(g.done_at) + ' 完成' : '') })
-              ),
-              mine ? h('div', { class: 'acts' },
-                h('button', { class: 'tiny', text: '改', onclick: () => editCountdown(g) }),
-                h('button', {
-                  class: 'tiny', text: '取消完成',
-                  onclick: () => commit(setDone('goals', g.id, false), '已取消完成标记'),
-                }),
-                h('button', {
-                  class: 'tiny danger', text: '删除',
-                  onclick: () => removeRow('goals', g.id, '倒计时任务「' + g.title + '」'),
-                })
-              ) : null
-            )
-          );
-        }
-      }
+      if (done.length) wrap.appendChild(cdDoneFold(done, mine));
       return wrap;
     });
+  }
+
+  /* 有待办的分成三段：今天（含逾期的）/ 本周（7 天内）/ 以后。
+     逾期的不单独开一段 —— 它最急，就该顶在「今天」的最上面（排序按截止日升序，
+     逾期的日子最小，自然排最前），旁边挂个红药丸说清楚已经欠了几天。
+     「以后」这段是必须的：只分三段的话，8 天以后的任务会从列表里凭空消失。 */
+  const CD_BUCKETS = [
+    { key: 'today', label: '今天', max: 0 },
+    { key: 'week',  label: '本周', max: 7 },
+    { key: 'later', label: '以后', max: Infinity },
+  ];
+  function cdBuckets(list) {
+    const todo = list.filter((g) => !g.done)
+      .sort((a, b) => (a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : 0));
+    return CD_BUCKETS.map((b) => Object.assign({}, b, { list: [] }))
+      .map((b, i, arr) => {
+        const lo = i === 0 ? -Infinity : arr[i - 1].max + 1;
+        b.list = todo.filter((g) => {
+          const n = daysFromToday(g.due_date);
+          return n >= lo && n <= b.max;
+        });
+        return b;
+      })
+      .filter((b) => b.list.length);
+  }
+
+  function cdSection(b, mine) {
+    return h('div', { class: 'cd-group' },
+      h('div', { class: 'cd-head' },
+        h('span', { class: 'cd-name', text: b.label }),
+        h('span', { class: 'cd-n', text: b.list.length + ' 件' })
+      ),
+      b.list.map((g) => cdRow(g, mine))
+    );
+  }
+
+  /* 完成区默认收起 —— 完成的事是「存档」，天天摊在眼前就是噪音。
+     用 <details> 不是自己写开关：键盘、读屏、点击热区这些浏览器都替我们做了。 */
+  function cdDoneFold(list, mine) {
+    return h('details', { class: 'cd-fold' },
+      h('summary', { text: '已完成 ' + list.length + ' 件' }),
+      h('div', { class: 'cd-fold-body' }, list.map((g) => cdRow(g, mine, true)))
+    );
+  }
+
+  const PRI_LABEL = { hi: '高', mid: '中', lo: '低' };
+
+  /* ── 卡片上就地改一个字段（倒计时 / 大任务 / 小任务共用）──────────
+     点一下就能改、改完点别处自动存，没有「保存」按钮那一道中转。
+     rec：那条记录。**先改本地再写库** —— 写失败时 quiet() 会 refresh 把真值
+       拉回来，不会留下「界面上改了、库里没改」的假象。
+     redraw：存成功后要不要重画。决定分组 / 排序 / 分区 / 色条的字段要重画；
+       别的不要 —— 重画会把光标从输入框里踢出去，接着打字就打到空气里。
+     emptyMsg：空值时弹这句并且不写库；传 null 表示这个字段允许空着。
+       空值那一支是**把框里的值写回原值**，不是重画 —— 重画会把光标踢出去，
+       而这里她十有八九是手滑清空了、正要接着改；把旧值还回去就够了。 */
+  function inlineText(rec, table, key, placeholder, redraw, emptyMsg) {
+    return h('input', {
+      class: 'inline', type: 'text', value: rec[key] || '', placeholder: placeholder,
+      title: '点一下就能改，改完点别处自动存',
+      onchange: (e) => {
+        const v = e.target.value.trim();
+        if (!v && emptyMsg) {
+          toast(emptyMsg, true);
+          e.target.value = rec[key] || '';   // 不留一个空格在那儿当她的「新标题」
+          return;
+        }
+        if (v === (rec[key] || '')) return;
+        Object.assign(rec, { [key]: v });
+        quiet(sb.from(table).update({ [key]: v }).eq('id', rec.id)).then((done) => {
+          if (!done) return;              // 失败时 quiet 已经报了错、还把真值拉了回来
+          if (redraw) redraw();
+          toast('已保存');                 // 就地改没有「保存」那一下，不说一声她不知道存上没有
+        });
+      },
+    });
+  }
+
+  /* 日期那一路。空值**不写库** —— date 框被清空时 value 是 ''，
+     存进去这一条就落到「今天」那一段里骗人；真库那一列也未必允许空。 */
+  function inlineDate(rec, table, key, redraw) {
+    return h('input', {
+      class: 'inline', type: 'date', value: rec[key] || '',
+      title: '点一下改日期，会自动换到对应那一段',
+      onchange: (e) => {
+        const v = e.target.value;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { toast('得选一个日期', true); if (redraw) redraw(); return; }
+        if (v === rec[key]) return;
+        Object.assign(rec, { [key]: v });
+        quiet(sb.from(table).update({ [key]: v }).eq('id', rec.id)).then((done) => {
+          if (!done) return;
+          if (redraw) redraw();
+          toast('已保存');
+        });
+      },
+    });
+  }
+
+  /* 一行倒计时。**就地可改**：标题、说明、截止日本身就是输入框，优先级是下拉，
+     点一下改、点别处自动存 —— 跟学习资源那张卡是同一套（见 resRow），
+     不再有「点『改』→ 滚回上面找表单」那一道中转。 */
+  function cdRow(g, mine, isDone) {
+    const n = daysFromToday(g.due_date);
+
+    /* 标题 / 说明的大小写就两处：标题决定这条排在哪一段、空着不行；
+       说明允许空着、也不影响位置（见 inlineText 上面那段注释）。 */
+    const textLine = (key, placeholder, needRedraw) =>
+      inlineText(g, 'goals', key, placeholder, needRedraw ? renderCountdown : null,
+                 key === 'title' ? '标题不能空着' : null);
+    /* 截止日：换一天就可能换一段（今天 → 本周 → 以后），必须重画 */
+    const dueLine = mine ? inlineDate(g, 'goals', 'due_date', renderCountdown) : null;
+
+    /* 优先级不是文本字段，单独走这里：先改本地 → 写库 → 重画（色条要立刻出来）。 */
+    const patch = (fields, needRedraw) => {
+      Object.assign(g, fields);
+      quiet(sb.from('goals').update(fields).eq('id', g.id)).then((done) => {
+        if (!done) return;              // 失败时 quiet 已经报了错、还把真值拉了回来
+        if (needRedraw) renderCountdown();
+        toast('已保存');
+      });
+    };
+
+    /* 优先级列还没建时（setup-11 没跑）不给下拉 —— 给了也是一写就报错。
+       S.priNoCol 跟 cdNoCol 一样，是「列在不在」的判断，不是「值有没有」。 */
+    const priOpts = [h('option', { value: '', text: '不标', selected: !g.priority })]
+      .concat(Object.keys(PRI_LABEL).map((k) =>
+        h('option', { value: k, text: PRI_LABEL[k], selected: g.priority === k })));
+
+    return h('div', {
+      class: 'item'
+        + (isDone ? ' done' : '')
+        + (g.priority && PRI_LABEL[g.priority] ? ' pri pri-' + g.priority : ''),
+    },
+      h('div', { class: 't' },
+        mine ? textLine('title', '要完成什么', false)
+             : h('span', { class: 'grow', text: g.title }),
+        isDone ? h('span', { class: 'pill ok', text: '已完成' }) : cdPill(n)
+      ),
+      mine ? textLine('detail', '说明（可选）', false)
+           : (g.detail ? h('div', { class: 'd', text: g.detail }) : null),
+      h('div', { class: 'bar-txt' },
+        /* 自己这一栏的截止日就是那个能改的日期框，不再多印一遍同样的日期；
+           对方那栏是只读文本。 */
+        mine ? h('span', { class: 'cd-due' }, h('span', { text: '截止' }), dueLine)
+             : h('span', { text: '截止 ' + dateText(g.due_date)
+                 + (isDone && g.done_at ? '，' + isoDate(g.done_at) + ' 完成' : '') }),
+        mine && isDone && g.done_at ? h('span', { text: isoDate(g.done_at) + ' 完成' }) : null
+      ),
+      mine && !S.priNoCol ? h('div', { class: 'm two' },
+        h('span', { text: '优先级' }),
+        h('select', {
+          class: 'pri-sel', style: { maxWidth: '84px' },
+          /* 必须重画：优先级的反馈是**卡片左边那条色条**，而色条是在渲染时定到
+             class 上的 —— 不重画的话她选完看不到任何变化，会以为没生效。
+             （说明字段不重画是因为它自己那个框里已经显示新值了。）
+             select 的 change 本来就意味着她选完了，重画不算打断。 */
+          onchange: (e) => patch({ priority: e.target.value }, true),
+        }, priOpts)
+      ) : null,
+      mine ? h('div', { class: 'acts' },
+        isDone ? h('button', {
+            class: 'tiny', text: '取消完成',
+            onclick: () => commit(setDone('goals', g.id, false), '已取消完成标记'),
+          })
+          : h('button', {
+            class: 'tiny', text: '完成',
+            onclick: () => commit(
+              setDone('goals', g.id, true, { progress: g.target || 1 }),
+              '完成了倒计时任务「' + (g.title || '') + '」'),
+          }),
+        h('button', {
+          class: 'tiny danger', text: '删除',
+          onclick: () => removeRow('goals', g.id, '倒计时任务「' + g.title + '」'),
+        })
+      ) : null
+    );
   }
 
   /* 还剩几天 —— 说人话，不说「剩余 0 天」这种要翻译的句子 */
@@ -1117,26 +1251,13 @@
 
   /* 加一条倒计时。goals 表的 period_start 是 not null，这儿拿今天占位 ——
      页面不显示它（那是 30 天小目标周期用的），只是为了满足约束。 */
+  /* 把上面那张表单清回「新建」的样子。
+     它现在只管新建 —— 改是在卡片上就地改的（见 cdRow），没有编辑态。 */
   function resetCdForm() {
-    S.cdEdit = null;
     $('cd-title').value = '';
     $('cd-detail').value = '';
     $('cd-due').value = addDays(today(), 7);
-    $('cd-add').textContent = '加上';
-    $('cd-cancel').hidden = true;
-  }
-
-  /* 「改」是把这一条填回上面那个表单，**不是就地编辑** ——
-     跟「考试成绩」那一页同一套做法，两个页面手感一致（她已经在用那套了）。
-     `S.cdEdit` 为 null 就是新建，按钮文案两个状态。 */
-  function editCountdown(g) {
-    S.cdEdit = g.id;
-    $('cd-title').value  = g.title || '';
-    $('cd-due').value    = g.due_date || '';
-    $('cd-detail').value = g.detail || '';
-    $('cd-add').textContent = '保存修改';
-    $('cd-cancel').hidden = false;
-    $('cd-title').focus();
+    $('cd-pri').value = '';
   }
 
   async function addCountdown() {
@@ -1146,25 +1267,26 @@
     if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) { toast('选一个截止日', true); return; }
     const detail = $('cd-detail').value.trim();
 
-    const editing = S.cdEdit;
-    /* 改的时候只动这三个字段，**不碰 period_start / target / progress / done**：
-       那些是占位和完成状态，改个标题不该顺手把它们重置掉。
-       owner 也不写 —— update 的 with check 要求 owner 还是我，本来就是我自己的行。 */
-    const r = editing
-      ? await sb.from('goals').update({ title: title, detail: detail, due_date: due }).eq('id', editing)
-      : await sb.from('goals').insert({
-          owner: S.me.id, title: title, detail: detail,
-          due_date: due, period_start: today(), target: 1, progress: 0, done: false,
-        });
+    /* period_start 是 not null，拿今天占位；页面不显示它（那是 30 天小目标周期用的）。
+       priority 只在那一列真的存在时才带 —— 没跑 setup-11 就写它，整条插入会失败，
+       变成「因为选了个优先级，任务都加不上了」，那不合理。 */
+    const fields = {
+      title: title, detail: detail, due_date: due,
+      period_start: today(), target: 1, progress: 0, done: false,
+    };
+    if (!S.priNoCol && $('cd-pri').value) fields.priority = $('cd-pri').value;
+
+    const r = await sb.from('goals').insert(Object.assign({ owner: S.me.id }, fields));
 
     if (r.error) {
       if (/due_date/i.test(r.error.message)) S.cdNoCol = true;   // 下次刷新前就知道列没建
+      if (/priority/i.test(r.error.message)) S.priNoCol = true;
       toast(schemaWarn(r.error), true);
       renderCountdown();
       return;
     }
     resetCdForm();
-    toast(editing ? '改好了' : '加上了，' + dateText(due) + '截止');
+    toast('加上了，' + dateText(due) + '截止');
     await refresh();
   }
 
@@ -1456,13 +1578,22 @@
 
         wrap.appendChild(
           h('div', { class: 'item' + (subs.length && doneN === subs.length ? ' done' : '') },
+            /* 名字 / 说明 / 截止日跟倒计时那边一样是**就地可改**的，不分「已建立的」
+               和「新加的」—— 她：「大任务拆解里已经建立的任务也要变得可以编辑」。
+               只有自己这一栏能改；对方那栏还是只读文本（改也只该改自己那份）。
+               名字决定这条排在哪、空着不行 → 重画；说明不影响位置 → 不重画。 */
             h('div', { class: 't' },
-              h('span', { class: 'grow', text: t.title }),
+              mine ? inlineText(t, 'tasks', 'title', '大任务叫什么', renderTasks, '大任务名不能空着')
+                   : h('span', { class: 'grow', text: t.title }),
               subs.length && doneN === subs.length ? h('span', { class: 'pill ok', text: '全部完成' }) : null
             ),
-            t.detail ? h('div', { class: 'd', text: t.detail }) : null,
+            mine ? inlineText(t, 'tasks', 'detail', '说明（可选）', null, null)
+                 : (t.detail ? h('div', { class: 'd', text: t.detail }) : null),
             t.due_date ? h('div', { class: 'm' },
-              h('span', { class: 'pill', text: '截止 ' + t.due_date }),
+              /* 自己这一栏的日期就是那个能改的日期框，不再多印一遍同样的日子 */
+              mine ? h('span', { class: 'cd-due' }, h('span', { text: '截止' }),
+                       inlineDate(t, 'tasks', 'due_date', renderTasks))
+                   : h('span', { class: 'pill', text: '截止 ' + t.due_date }),
               left < 0 ? h('span', { class: 'pill bad', text: '已过期 ' + (-left) + ' 天' })
                        : h('span', { class: 'pill' + (left <= 3 ? ' bad' : ''), text: '剩 ' + left + ' 天' })
             ) : null,
@@ -1529,14 +1660,20 @@
       if (lk) box.appendChild(lk);
       box.appendChild(h('button', {
         class: 'tiny danger', text: '✕',
-        onclick: async () => {
-          if (!confirm(isCh ? '删掉这一章？' : '删掉这个小任务？')) return;
-          /* 先把挂着它的关联清掉，免得留下一堆指着空气的行 */
-          await dropLinksOf(sub.id);
-          const twin = linkedTo(sub);
-          if (twin) { twin.link_id = null; await quiet(sb.from('subtasks').update({ link_id: null }).eq('id', twin.id)); }
-          await commit(sb.from('subtasks').delete().eq('id', sub.id));
-        },
+        /* 问都不问，删了给 5 秒撤回 —— 跟别处的删除一个规矩。
+           「这一章」还是「这一步」看它挂在谁身上（同一个渲染函数管两种）。 */
+        onclick: () => removeRow('subtasks', sub.id,
+          (isCh ? '章节「' : '小任务「') + (sub.title || '未命名') + '」',
+          () => {
+            /* links 那张表由 removeRow 里的 dropLinksOf 负责；这里管的是**反方向** ——
+               对端那条 subtask 自己的 link_id 正指着即将被删掉的这一条。
+               不清的话它就成了指着一个不存在 id 的孤儿，两边勾选联动会勾到空气。 */
+            const twin = linkedTo(sub);
+            if (twin) {
+              twin.link_id = null;
+              return quiet(sb.from('subtasks').update({ link_id: null }).eq('id', twin.id));
+            }
+          }),
       }));
     } else {
       box.appendChild(h('span', { class: 'grow', text: sub.title || '(待填写)' }));
@@ -2964,13 +3101,83 @@
     await refresh();
   }
 
-  /* ── 删除（统一确认）───────────────────────────────────────── */
-  async function removeRow(table, id, what) {
-    if (!confirm('确定删除' + what + '？删了不可恢复。')) return;
-    /* 挂着它的关联要一起清掉，否则 links 里会留下指着空气的行。
-       （id 是 uuid，别的表不会有同号的，所以这里不用管 table 是哪张） */
-    await dropLinksOf(id);
-    await commit(sb.from(table).delete().eq('id', id), '已删除');
+  /* ── 删除：不弹确认框，改成 5 秒内能点回来 ────────────────────
+     弹一个「确定删除？」能防住误删，可每一次正经删除也得多点一下；
+     「删完 5 秒内可以撤回」两样都占：不打断顺手删，误删也救得回来。
+     实现是**延迟真删** —— 先把这一行从界面上摘掉、记在 trash 里，
+     5 秒之后才真发 delete。不选「先真删、撤回时再 insert 回去」是因为：
+     那样 id 会变，外键级联没了的小任务和关联都得一条条重建，那才是真会出错的路。
+     what 用在提示条上（「已删除资源『线性代数』」），说清楚删掉的是哪一条。 */
+  const UNDO_MS = 5000;
+  const trash = new Map();          // id → { timer }：这 5 秒里等着真删的行
+  /* 表名 → S 里那个数组的名字。daily_logs 存在 S.daily 里，跟表名不一样。 */
+  const S_ARR = { goals: 'goals', tasks: 'tasks', subtasks: 'subtasks',
+                  daily_logs: 'daily', resources: 'resources', exams: 'exams' };
+  /* 待删的行不能因为一次界面刷新又冒回来（refresh 会重新从库里拉一遍）。
+     库里那份确实还在 —— 删除请求还没发出去 —— 但界面上既然已经摘掉了，
+     就不该自己长回来；真想让它回来只有一条路：点「撤回」。 */
+  const live = (rows) => (rows || []).filter((r) => !trash.has(r.id));
+  let undoTimer = null;
+
+  function hideUndo() {
+    clearTimeout(undoTimer);
+    $('undo').hidden = true;
+    clear($('undo'));
+  }
+
+  /* 只删了一条就把那一条的名字写出来（「已删除倒计时任务『交开题报告』」），
+     5 秒里连删了好几条就只报个数 —— 条就那么宽，列一串名字反而看不清删了几件。
+     文案按当前的 trash 现算，所以删完一条、条上的数字会跟着变。 */
+  function showUndo() {
+    clearTimeout(undoTimer);
+    const bar = $('undo');
+    clear(bar);
+    bar.hidden = false;
+    const only = trash.size === 1 ? [...trash.values()][0].what : '';
+    const words = only ? '已删除' + only : '已删除 ' + trash.size + ' 项';
+    /* 名字长的时候条上会截断（CSS 里那行 ellipsis），所以整句也挂到 title 上 ——
+       悬停能看全，不用为了看清删的是哪条去点撤回。 */
+    bar.appendChild(h('span', { class: 'grow', text: words, title: words }));
+    bar.appendChild(h('button', { class: 'tiny', text: '撤回', onclick: undoTrash }));
+    undoTimer = setTimeout(hideUndo, UNDO_MS);
+  }
+
+  /* 撤回：这几秒里库里的行一行没动（删除请求还没发出去），所以重新拉一次
+     就是原样 —— 不用自己算「该插回数组的哪个位置」，也就不会插错地方。 */
+  async function undoTrash() {
+    trash.forEach((t) => clearTimeout(t.timer));
+    trash.clear();
+    hideUndo();
+    await refresh();
+    toast('已恢复');
+  }
+
+  /* what：撤回条上写「已删除 ___」用的。
+     它得在**按下删除的那一刻**就取好 —— 等到 5 秒后真删的时候，那条记录
+     可能已经被别的操作改过名了（撤回条上就会写着一个她没见过的名字）。
+     beforeDelete：真删之前要顺带收拾的东西（可选）。小任务要拿它清对端那条
+     的 link_id —— 不清的话对端还指着一个马上就不存在的 id，勾选联动会勾到空气。
+     钩子抛错不拦着删除继续走（它只是个清理动作，卡住反而把删除也卡死了）。 */
+  function removeRow(table, id, what, beforeDelete) {
+    const arr = S[S_ARR[table]];
+    const i = arr ? arr.findIndex((r) => r.id === id) : -1;
+    if (i < 0) return;
+    arr.splice(i, 1)[0];            // 先从界面上摘掉，看着就是「删掉了」
+    renderCurrent();
+
+    const entry = { timer: null, what: what };
+    entry.timer = setTimeout(() => {
+      trash.delete(id);
+      /* 挂着它的关联要一起清掉，否则 links 里会留下指着空气的行。
+         （id 是 uuid，别的表不会有同号的，所以这里不用管 table 是哪张） */
+      dropLinksOf(id)
+        .then(() => (beforeDelete ? beforeDelete() : null))
+        .catch(() => null)
+        .then(() => commit(sb.from(table).delete().eq('id', id)));
+      if (trash.size) showUndo(); else hideUndo();     // 条上的数字跟着变
+    }, UNDO_MS);
+    trash.set(id, entry);
+    showUndo();
   }
 
   /* ── 页签零：主页 ──────────────────────────────────────────── */
@@ -3196,8 +3403,6 @@
     });
 
     $('cd-add').addEventListener('click', addCountdown);
-    $('cd-cancel').addEventListener('click', () => { resetCdForm(); toast('没改，表单已清空'); });
-
 
     $('t-add').addEventListener('click', async () => {
       const title = $('t-title').value.trim();

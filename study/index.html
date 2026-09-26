@@ -99,8 +99,14 @@
           <input type="text" id="cd-title" placeholder="例如：交开题报告"></div>
         <div><label class="f" for="cd-due">几月几号完成</label>
           <input type="date" id="cd-due"></div>
+        <div style="max-width:104px"><label class="f" for="cd-pri">优先级</label>
+          <select id="cd-pri">
+            <option value="">不标</option>
+            <option value="hi">高</option>
+            <option value="mid">中</option>
+            <option value="lo">低</option>
+          </select></div>
         <button class="primary" id="cd-add">加上</button>
-        <button id="cd-cancel" hidden>取消</button>
       </div>
       <div class="field" style="margin-top:10px">
         <label class="f" for="cd-detail">说明（可选）</label>
@@ -396,6 +402,10 @@
 </div>
 
 <div id="toast" class="toast" hidden></div>
+
+<!-- 删除后的「撤回」条。单独一条、不跟 toast 挤在一起：toast 还在报别的事
+     （比如「已保存」）时，这一条也得能点。放在 toast 上面一点。 -->
+<div id="undo" class="undo" hidden></div>
 
 <!-- Supabase SDK 自己托管在本目录（国内网络对 CDN 不稳，少一个外部依赖）
      加载顺序不能反：app.js 依赖 supabase.js 挂上的 window.supabase -->

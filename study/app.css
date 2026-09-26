@@ -149,10 +149,12 @@ button:focus-visible,summary:focus-visible,.tab:focus-visible,.chip:focus-visibl
   border-bottom:1px solid var(--grid);padding:10px 0;margin-bottom:0}
 .pcard .item:last-child,.who .item:last-child{border-bottom:none;padding-bottom:0}
 .item .acts button{font-size:12px;padding:4px 10px}
-.item .t{font-weight:600;font-size:13.5px;display:flex;gap:8px;align-items:flex-start}
+/* 三级字号，别全挤在一个大小上：标题 15px 主文字色 / 说明 12px 次级灰 /
+   元信息 12px 更淡的灰。原来标题 13.5px 跟说明只差 1.5px，扫过去分不出主次。 */
+.item .t{font-weight:600;font-size:15px;display:flex;gap:8px;align-items:flex-start}
 .item .t .grow{flex:1;min-width:0;word-break:break-word}
 .item .d{font-size:12px;color:var(--text-secondary);margin-top:3px;word-break:break-word}
-.item .m{font-size:11.5px;color:var(--muted);margin-top:5px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.item .m{font-size:12px;color:var(--muted);margin-top:5px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .item .acts{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
 /* ── 学习资源列表：「学科 → 类型」两层分组（2026-09-26）────────────
    资源攒到十几本之后平铺着找不动，分两层之后一眼看得出哪一科堆了多少。
@@ -190,9 +192,43 @@ button:focus-visible,summary:focus-visible,.tab:focus-visible,.chip:focus-visibl
 /* 平台 · 学科 横排一行；类型 · 状态下拉横排一行 */
 .item .d.two{display:flex;align-items:center;gap:8px}
 .item .m.two{flex-wrap:nowrap;gap:6px}
-/* 倒计时列表里「待办 / 已完成」之间那道分隔 */
-.cd-sep{font-size:11px;font-weight:650;color:var(--muted);margin:12px 0 8px;
-  padding-top:9px;border-top:1px solid var(--border)}
+/* ── 倒计时：今天 / 本周 / 以后 三个分区，完成区折叠 ──────────────
+   原来是一长条平铺的列表，「已完成」只在末尾加一条分隔线；攒了几十件之后
+   完全看不出今天该干什么。现在按还剩几天分桶，逾期的并进「今天」排最前。 */
+.cd-group{margin-bottom:15px}
+.cd-group:last-child{margin-bottom:0}
+.cd-head{display:flex;align-items:baseline;gap:7px;margin:0 0 8px}
+.cd-head .cd-name{font-weight:700;font-size:12.5px;color:var(--text-primary)}
+.cd-head .cd-n{font-size:11px;color:var(--muted)}
+/* 完成区默认收起（<details> 不带 open）—— 存档不该天天占着视线。
+   跟 .subs-fold 一样的手法，但字号大一点：它是一整个分区的头。 */
+.cd-fold{margin-top:4px;border-top:1px solid var(--grid);padding-top:9px}
+.cd-fold > summary{font-size:12px;font-weight:650;color:var(--text-secondary);
+  cursor:pointer;list-style:none;display:flex;align-items:center;gap:5px}
+.cd-fold > summary::-webkit-details-marker{display:none}
+.cd-fold > summary::before{content:"▸";font-size:9px;color:var(--muted)}
+.cd-fold[open] > summary::before{content:"▾"}
+.cd-fold[open] > summary{margin-bottom:9px}
+.cd-fold-body .item{margin-bottom:7px}
+
+/* 卡片上「截止 [日期]」那一小截：日期是就地编辑的 input，跟标签排一行 */
+.item .cd-due{display:inline-flex;align-items:center;gap:5px}
+
+/* ── 优先级：只在左边一条 3px 色条，不铺整块背景 ──────────────────
+   「优先级只给左边 3px 色条，不加整块背景」。铺底色会把「逾期红」「完成绿」
+   这两件真正要紧的事淹掉 —— 语义色一多就等于没有语义色。
+   色条用系列色，不占红绿：红只留给逾期、绿只留给完成。
+   没标优先级的行不加 left padding，跟别的行保持左对齐。 */
+.item.pri{position:relative;padding-left:13px}
+.item.pri::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;
+  border-radius:0 2px 2px 0;background:var(--muted)}
+.item.pri-hi::before{background:var(--series-1)}
+.item.pri-mid::before{background:var(--series-2)}
+/* 优先级下拉跟就地编辑框一个手感：平时没边框，悬停透出来，聚焦描强调色 */
+.item .pri-sel{font:inherit;font-size:12px;color:var(--text-secondary);
+  background:transparent;border:1px solid transparent;border-radius:7px;padding:1px 4px}
+.item .pri-sel:hover{border-color:var(--border)}
+.item .pri-sel:focus{border-color:var(--series-1);background:var(--surface-1);outline:none}
 
 /* 进度条 */
 .bar{height:7px;background:var(--chip);border-radius:4px;overflow:hidden;margin-top:8px;
@@ -275,15 +311,21 @@ details{border:1px solid var(--border);border-radius:10px;padding:10px 14px;back
 summary{cursor:pointer;font-size:13px;font-weight:600}
 details[open] summary{margin-bottom:11px}
 
-.pill{display:inline-block;font-size:11px;font-weight:600;padding:1px 8px;border-radius:20px;
-  background:var(--chip);color:var(--text-secondary);border:1px solid var(--border);white-space:nowrap}
-.pill.ok{color:var(--good);border-color:var(--good)}
-.pill.bad{color:var(--critical);border-color:var(--critical)}
-/* 快到期（3 天内）。**不能**写 color:var(--warning) —— 那支黄在浅色底上只有
-   1.84:1，等于看不见。黄只用在描边和底纹上，字仍走主文字色，颜色只是辅助，
-   真正的信息在药丸里的那句「还剩 2 天」里。 */
-.pill.warn{color:var(--text-primary);border-color:var(--warning);
-  background:color-mix(in srgb, var(--warning) 22%, var(--chip))}
+/* 标签做成浅色胶囊：一层淡底，没有描边。描边式在浅底上是一圈细线，缩到 11px
+   看着发虚；淡底更像「标签」，跟正文分得开。（去掉 border 后 padding 各 +1px，
+   高度和宽度跟原来一样。） */
+.pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;
+  background:var(--chip);color:var(--text-secondary);white-space:nowrap}
+/* 完成 / 逾期：语义由**底色**承担，字仍走主文字色。
+   不染字是因为同色字压同色淡底实测达不到 AA —— 浅色 20% 底上红字只有 3.23:1、
+   深色只有 2.61:1；黄更极端（当字 1.84:1）。check-contrast.mjs 有守卫拦这个错法。
+   也不铺满色块：一整块红/绿太吵，语义色一多就等于没有语义色。
+   绿和红掺 24% 跟黄掺 26% 看着分量差不多 —— 黄本身最浅，需要多掺一点才同重。 */
+.pill.ok{color:var(--text-primary);background:color-mix(in srgb, var(--good) 24%, var(--chip))}
+.pill.bad{color:var(--text-primary);background:color-mix(in srgb, var(--critical) 24%, var(--chip))}
+/* 快到期（3 天内）。真正的信息在药丸里的那句「还剩 2 天」里，颜色只是辅助。 */
+.pill.warn{color:var(--text-primary);
+  background:color-mix(in srgb, var(--warning) 26%, var(--chip))}
 
 .empty{color:var(--muted);font-size:12.5px;padding:22px 0;text-align:center;line-height:1.7}
 
@@ -292,6 +334,20 @@ details[open] summary{margin-bottom:11px}
   background:var(--text-primary);color:var(--page);font-size:13px;font-weight:550;
   padding:9px 18px;border-radius:22px;box-shadow:0 6px 20px rgba(0,0,0,.28);max-width:90vw}
 .toast.bad{background:var(--critical);color:#fff}
+
+/* 删除后的「撤回」条。删除不弹确认框，改成删完给 5 秒机会点回来。
+   单独一条、不跟 toast 挤在一起 —— toast 正在报别的事（比如「已保存」）时，
+   这一条也得能点。位置比 toast 高一档。 */
+.undo{position:fixed;left:50%;bottom:78px;transform:translateX(-50%);z-index:98;
+  display:flex;align-items:center;gap:14px;
+  background:var(--surface-1);color:var(--text-primary);border:1px solid var(--border);
+  font-size:13px;padding:8px 10px 8px 16px;border-radius:12px;
+  box-shadow:0 6px 20px rgba(0,0,0,.22);max-width:90vw}
+/* 收起不靠 .undo[hidden] —— 文件顶部那条 [hidden]{display:none !important}
+   会压过这里的 display:flex（!important 胜过特异性）。别再补一条没用的规则。 */
+/* 名字太长也不能把条撑成一大块：截断加省略号（鼠标悬停有 title） */
+.undo .grow{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.undo button.tiny{background:var(--chip);border-color:var(--border);font-weight:600}
 
 .spacer{flex:1}
 

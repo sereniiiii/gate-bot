@@ -141,7 +141,9 @@ const TEXT_ON = [
   ['.entry .ed', '--surface-1', '入口卡片的一句说明'],
   ['.tile .k', '--page', '统计块上面那个小标签'],
   ['.mo-head span', '--page', '月历的星期表头'],
-  ['.cd-sep', '--page', '倒计时列表里「已完成」那道分隔'],
+  ['.cd-head .cd-name', '--page', '倒计时分区头（今天 / 本周 / 以后）'],
+  ['.cd-head .cd-n', '--page', '分区头右边那个「N 件」'],
+  ['.cd-fold > summary', '--page', '「已完成 N 件」那个折叠头'],
   ['.exscore .fs', '--surface-1', '分数右边那行「满分」'],
   ['.who h3 .badge', '--page', '「我 / 对方」那个小标记'],
   ['.rg-head .rg-name', '--page', '资源列表的学科组名'],
@@ -176,36 +178,56 @@ for (const [sel, bgTok, label] of TEXT_ON) {
   }
 }
 
-/* 药丸：底色是 color-mix(警示黄 p%, chip)，字色从 app.css 里读。
-   为什么要单查这一档：黄在浅色底上当文字只有 1.84:1，是最容易顺手写错的一处
-   ——「快到期了」很自然会想写 color:var(--warning)，那样等于看不见。 */
-const warnPct = (() => {
-  const m = noComment.match(/\.pill\.warn\s*\{[^}]*?var\(--warning\)\s+([\d.]+)%/);
-  return m ? Number(m[1]) / 100 : null;
-})();
-const warnInk = inkToken('.pill.warn');
-/* 前面那个 (?:^|[;{\s]) 不能省：border-color:var(--warning) 里也含 "color:var(--warning)"，
-   少了它这条守卫会在正确的 CSS 上误报（第一版就是这么错的）。 */
-const warnColored = /(?:^|[;{\s])color\s*:\s*var\(--warning\)/.test(
-  (noComment.match(/\.pill\.warn\s*\{[^}]*\}/) || [''])[0]
-);
-console.log('\n【药丸：快到期】');
-if (warnColored) {
-  console.error('  ❌ .pill.warn 把文字染成了警示黄 —— 浅色底上只有 1.84:1，等于看不见。' +
-                '黄只用来描边/铺底，字走 --text-primary。');
-  bad++;
-} else if (warnPct === null || !warnInk) {
-  console.error('  ⚠️  没从 app.css 里解析出 .pill.warn 的底纹百分比或字色（选择器被改过？）');
-  bad++;
-} else {
-  for (const [mode, V] of Object.entries(VARS)) {
-    if (!V[warnInk]) { console.error(`  ⚠️  .pill.warn 用了未知字色 token ${warnInk}`); bad++; continue; }
-    const bg = mix(V['--warning'], V['--chip'], warnPct);
-    const r = ratio(hex(V[warnInk]), bg);
-    const ok = r >= 4.5;
-    if (!ok) bad++;
-    console.log(`  ${(mode + ' .pill.warn').padEnd(20)} 底 ${fmt(bg)}（警示黄 ${warnPct * 100}% + chip）  ` +
-                `${r.toFixed(2)}:1 ${ok ? 'PASS' : 'FAIL'}`);
+/* ── 语义药丸：完成（绿）/ 逾期（红）/ 快到期（黄）───────────────
+   三个都是「一层淡底 + 主文字色」，语义由**底色**承担，不染字。
+   为什么要逐档实测、不能看着差不多就算：同色字压同色淡底实测全都不到 4.5:1 ——
+   浅色 20% 底上绿字 4.87 勉强过、红字只有 3.23；深色 20% 底上红字 2.61。
+   黄更极端：当字只有 1.84:1。「完成用绿」很自然会写 color:var(--good)，
+   那就是这条守卫要拦的错法。百分比从 app.css 里读，改百分比会跟着重算。 */
+console.log('\n【药丸：完成 / 逾期 / 快到期】');
+for (const [name, tok, label] of [['ok', '--good', '已完成'],
+                                  ['bad', '--critical', '逾期'],
+                                  ['warn', '--warning', '快到期（3 天内）']]) {
+  const sel = '.pill.' + name;
+  const blk = (noComment.match(new RegExp('\\.pill\\.' + name + '\\s*\\{[^}]*\\}')) || [''])[0];
+  const ink = inkToken(sel);
+  const pctM = blk.match(new RegExp('var\\(' + tok + '\\)\\s+([\\d.]+)%'));
+  /* 前面那个 (?:^|[;{\s]) 不能省：border-color:var(--warning) 里也含 "color:var(--warning)"，
+     少了它这条守卫会在正确的 CSS 上误报（第一版就是这么错的）。
+     border 那套已经不用了，但这条正则留着不碍事。 */
+  const painted = new RegExp('(?:^|[;{\\s])color\\s*:\\s*var\\(' + tok + '\\)').test(blk);
+  const solid = new RegExp('(?:^|[;{\\s])background\\s*:\\s*var\\(' + tok + '\\)').test(blk);
+  if (solid) {
+    console.error(`  ❌ ${sel} 的底铺成了满色 ${tok} —— 一整块红/绿太吵（语义色要克制）。` +
+                  '底走 color-mix 掺成淡色。');
+    bad++;
+  } else if (painted) {
+    console.error(`  ❌ ${sel} 把文字染成了 ${tok} —— 同色字压同色淡底达不到 AA。` +
+                  '语义交给底色，字走 --text-primary。');
+    bad++;
+  } else if (!pctM || !ink) {
+    console.error(`  ⚠️  没从 app.css 里解析出 ${sel} 的淡底百分比或字色（选择器被改过？）`);
+    bad++;
+  } else {
+    const pct = Number(pctM[1]) / 100;
+    for (const [mode, V] of Object.entries(VARS)) {
+      if (!V[ink] || !V[tok] || !V['--chip']) {
+        console.error(`  ⚠️  ${sel} 用了未知 token（字 ${ink} / 底 ${tok} / --chip）`); bad++; continue;
+      }
+      const bg = mix(V[tok], V['--chip'], pct);
+      const r = ratio(hex(V[ink]), bg);
+      const ok = r >= 4.5;
+      /* 另一头也要看：底掺得太淡就等于没底，「浅色胶囊」看着跟正文一样了。
+         阈值 1.2:1 是自定的（WCAG 没有这一档），只用来拦「调到 5% 底已经没了
+         脚本还说 PASS」。药丸可能落在页面底也可能落在卡片底上，两边取更小的那个：
+         浅色下卡片更亮、深色下卡片也更亮，方向相反，所以不能只算一种。 */
+      const vis = Math.min(ratio(bg, hex(V['--page'])), ratio(bg, hex(V['--surface-1'])));
+      const okv = vis >= 1.2;
+      if (!ok || !okv) bad++;
+      console.log(`  ${(mode + ' ' + sel).padEnd(22)} 淡底 ${fmt(bg)}（${tok} ${pct * 100}% + chip）  ` +
+                  `字 ${r.toFixed(2)}:1 ${ok ? 'PASS' : 'FAIL'}   底色可辨 ${vis.toFixed(2)}:1 ` +
+                  `${okv ? 'PASS' : '太淡'}   ${label}`);
+    }
   }
 }
 

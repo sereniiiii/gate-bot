@@ -91,7 +91,22 @@ globalThis.document = {
   querySelectorAll(sel) { return sel === '.tab' ? tabs : sel === '.pane' ? panes : []; },
   addEventListener() {},
 };
-globalThis.confirm = () => true;
+/* 确认框改成**记账的**：删除这一路现在不弹框了，得能断言「一次都没问」。
+   返回 true 保持老行为（还有几处正常流程仍会问她，比如「一圈状态不一致，
+   要一起标完成吗」）。 */
+let confirmCalls = 0;
+globalThis.confirm = () => { confirmCalls++; return true; };
+
+/* ── 把时钟往前拨 ────────────────────────────────────────────────
+   删除是**延迟 5 秒真删**（那 5 秒是给她撤回的窗口）。真等 5 秒整个用例要多跑
+   好几秒，所以把这类长定时器截下来攒着，runLongTimers() 一次性触发 —— 等价于
+   「5 秒过去了」。短的（toast 自动收）照常走真的：它们每节都在用。 */
+const LATE = [];
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, ms, ...rest) =>
+  (ms >= 4500 ? (LATE.push(fn), 0) : realSetTimeout(fn, ms, ...rest));
+const runLongTimers = () => { LATE.splice(0).forEach((f) => f()); };
+
 globalThis.window = globalThis;
 globalThis.scrollTo = () => {};
 globalThis.URL.createObjectURL = () => 'blob:fake';
@@ -170,7 +185,7 @@ let failSelect = null;
 function qb(table) {
   const st = { op: 'select', eq: null, single: false };
   const o = {
-    select() { return o; }, order() { return o; }, limit() { return o; },
+    select(cols) { st.cols = cols; return o; }, order() { return o; }, limit() { return o; },
     single() { st.single = true; return o; },
     insert(r) { st.op = 'insert'; st.rows = Array.isArray(r) ? r : [r]; return o; },
     update(r) { st.op = 'update'; st.rows = r; return o; },
@@ -183,10 +198,17 @@ function qb(table) {
       return new Promise((resolve) => {
         /* 只让**写**操作失败。读也一起失败的话整页刷新就空掉了，
            测出来的就不是「这一列不存在」而是「整个页面崩了」。 */
-        if (failSelect && st.op === 'select' && failSelect === table) {
-          failSelect = null;
-          resolve({ data: null, error: { message: "Could not find the table 'public." + table + "' in the schema cache" } });
-          return;
+        /* 'exams' → 整张表读不了；'goals:priority' → 只有「探这一列在不在」的那次读失败
+           （loadPriorityCol 走的就是后者，列不存在时 PostgREST 报的是 column ... does not exist）。 */
+        if (failSelect) {
+          const [ft, fcol] = failSelect.split(':');
+          if (st.op === 'select' && ft === table && (!fcol || String(st.cols || '').includes(fcol))) {
+            failSelect = null;
+            resolve({ data: null, error: { message: fcol
+              ? 'column "' + fcol + '" does not exist'
+              : "Could not find the table 'public." + table + "' in the schema cache" } });
+            return;
+          }
         }
         if (failNext && st.op !== 'select') { const m = failNext; failNext = null; resolve({ data: null, error: { message: m } }); return; }
         const T = (DB[table] = DB[table] || []);
@@ -488,6 +510,86 @@ ok(segs2.length === 1, '对方 1 个小任务 → 1 段');
 ok(segs2.filter((x) => /\bon\b/.test(x.className)).length === 0, '对方一段都没点亮');
 ok($('tasks-cols').textContent.includes('100%'), '百分比 100%（我的任务）');
 
+console.log('── 大任务：已建立的任务也能就地改 ──');
+/* 她：「大任务拆解里已经建立的任务也要变得可以编辑」。
+   以前只有小任务那一行能改，大任务的名字 / 说明 / 截止日是印上去的死文本 ——
+   想改个名字只能删掉重建，连带下面的小任务和关联全丢。
+   ⚠️ 找卡片不能用 findAll(card, INPUT) 当门牌：小任务的输入框也在这个 .item 里面
+   （.subs 是它的子节点），会把「第 1-4 讲」那些一起捞进来。这里按**标题框里的值**认卡。 */
+const taskCard = (title) => byCls($('tasks-cols'), 'item').find((c) => {
+  const t = findAll(c, (n) => n.tagName === 'INPUT' && n.type === 'text')[0];
+  return !!t && t.value === title;
+});
+/* 卡片里的输入框按 DOM 顺序：名字 / 说明 / 截止日，然后才是小任务那些（勾选框 + 名字） */
+const cardIns = (c) => findAll(c, (n) => n.tagName === 'INPUT');
+const t1card = taskCard('学完线性代数');
+ok(!!t1card, '（先找到「学完线性代数」那张卡）');
+ok(cardIns(t1card).length >= 3 && cardIns(t1card)[0].className.includes('inline'),
+  '大任务的名字本身就是个输入框，不是印出来的死文本');
+ok(cardIns(t1card)[0].value === '学完线性代数' && cardIns(t1card)[1].value === '把 MIT 那门刷完',
+  '框里装着现在的名字和说明');
+ok(cardIns(t1card)[2].type === 'date' && cardIns(t1card)[2].value === '2026-10-10',
+  '截止日也是能改的日期框（原来这里是个印上去的 pill）：' + cardIns(t1card)[2].value);
+
+/* 改名字：走 update、不新增一行、说一声、并且重画（名字决定卡片顺序） */
+clearToast();
+const t1 = DB.tasks.find((t) => t.id === 't1');
+const t1keep = { title: t1.title, detail: t1.detail, due_date: t1.due_date };
+const nTasksBefore = DB.tasks.length;
+const nameNode = cardIns(t1card)[0];
+nameNode.value = '学完线性代数（改过）';
+nameNode.fire('change'); await tick(); await tick();
+ok(DB.tasks.length === nTasksBefore && DB.tasks.find((t) => t.id === 't1').title === '学完线性代数（改过）',
+  '改的是**原来那一行**，不是新增一行（id 还是 t1）');
+ok($('toast').textContent === '已保存', '就地改没有「保存」那一下，得说一声：' + $('toast').textContent);
+ok(cardIns(taskCard('学完线性代数（改过）'))[0] !== nameNode,
+  '改名字会重画列表 —— 名字决定卡片排在哪、也决定分组');
+ok(!!taskCard('学完线性代数（改过）') || subRowOf($('tasks-cols'), '第 1-4 讲'),
+  '重画之后这张卡还在（名字变了照样认得出）');
+ok(findAll($('tasks-cols'), (n) => /\bsq\b/.test(n.className)).length === 4,
+  '重画只重画列表，下面的小任务和分段进度条一条没丢（我的 3 段 + 对方的 1 段）');
+
+/* 改说明：**不重画** —— 存完那个输入框还得是同一个节点，光标不至于被踢出去 */
+const tcard2 = taskCard('学完线性代数（改过）');
+const noteNode2 = cardIns(tcard2)[1];
+noteNode2.value = '改成别的说明';
+noteNode2.fire('change'); await tick(); await tick();
+ok(DB.tasks.find((t) => t.id === 't1').detail === '改成别的说明', '说明也写进去了');
+ok(cardIns(taskCard('学完线性代数（改过）'))[1] === noteNode2,
+  '改说明不重画 —— 重画会把光标踢出输入框，接着打字就打到空气里');
+
+/* 改截止日：那一行的「剩 N 天」得跟着重算，所以要重画 */
+const dueNode2 = cardIns(taskCard('学完线性代数（改过）'))[2];
+dueNode2.value = isoOff(5);
+dueNode2.fire('change'); await tick(); await tick();
+ok(DB.tasks.find((t) => t.id === 't1').due_date === isoOff(5), '新截止日写进去了');
+ok(cardIns(taskCard('学完线性代数（改过）'))[2] !== dueNode2, '改截止日会重画（那行「剩几天」要重算）');
+ok(taskCard('学完线性代数（改过）').textContent.includes('剩 5 天'),
+  '卡片上「剩几天」跟着新的截止日走：' + taskCard('学完线性代数（改过）').textContent);
+
+/* 名字清空 → 不写库、弹回原值。空名字的卡片就是一张不知道是什么的东西 */
+clearToast();
+const cardNow = taskCard('学完线性代数（改过）');
+cardIns(cardNow)[0].value = '   ';
+cardIns(cardNow)[0].fire('change'); await tick(); await tick();
+ok(DB.tasks.find((t) => t.id === 't1').title === '学完线性代数（改过）', '名字只有空格 → 不写库');
+ok($('toast').textContent.includes('大任务名不能空着'), '并且说清楚缺什么：' + $('toast').textContent);
+ok(cardIns(taskCard('学完线性代数（改过）'))[0].value === '学完线性代数（改过）',
+  '框里弹回原来的名字，不留一个空格在那儿');
+
+/* 对方那一栏还是只读的：改也只该改自己那份 */
+const oCard = byCls($('tasks-cols'), 'item').find((c) => c.textContent.includes('写完开题报告'));
+ok(!!oCard, '（找到对方那张卡）');
+ok(findAll(oCard, (n) => n.tagName === 'INPUT' && (n.type === 'text' || n.type === 'date')).length === 0,
+  '对方那一栏的大任务名字 / 说明 / 截止日都还是只读文本，点不动');
+
+/* 收尾：按 id 把三个字段还原，别影响后面的用例（「学完线性代数」这个名字
+   下面几十条断言都要用它找） */
+Object.assign(DB.tasks.find((t) => t.id === 't1'), t1keep);
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok(!!taskCard('学完线性代数') && !taskCard('学完线性代数（改过）'),
+  '收尾后「学完线性代数」回来了（按 id 还原）');
+
 console.log('── 月行程表：跟着每天的完成情况走 ──');
 tabs[1].fire('click'); await tick();          // goals
 const Y = 2026, M = 9, DIM = 30, LEAD = new Date(Y, M - 1, 1).getDay();
@@ -597,14 +699,51 @@ ok(byCls($('cd-cols'), 'item').length === 3 && !byCls($('cd-cols'), 'seg').lengt
 ok(!$('cd-cols').textContent.includes('进度 0 / 1') && !$('pane-goals').textContent.includes('进度 0 / 1'),
   '这一页哪儿都没有 0/1 的假进度条');
 
-const cdWho = byCls($('cd-cols'), 'who');
+/* ⚠️ 每次 renderCountdown 都会把 #cd-cols 里的东西整个重建，早先抓的 cdWho
+   就成了脱离 DOM 的旧节点 —— 假 DOM 里照样读得出内容，但那是改之前的。
+   凡是在「点过按钮 / 改过字段」之后要读的，一律用 cdWhoNow() 现抓。 */
+const cdWhoNow = () => byCls($('cd-cols'), 'who');
+const cdWho = cdWhoNow();
 ok(cdWho.length === 2, '倒计时也是双栏（两人各一栏）');
 ok(find(cdWho[0], (n) => hasCls(n, 'nm')).textContent === '小 A', '我那栏排前面');
 const meCd = byCls(cdWho[0], 'item');
 ok(meCd.length === 2, '我这栏 2 条（已完成的不算待办），实际 ' + meCd.length);
-ok(meCd[0].textContent.includes('交实验数据') && meCd[1].textContent.includes('交开题报告'),
-  '待办按截止日从近到远排 —— 已经过期的那条排在最前面：' +
-  meCd.map((i) => i.textContent.slice(0, 6)).join(' | '));
+
+/* 倒计时的标题 / 说明 / 截止日现在是卡片上的就地编辑框 —— 不在 textContent 里，
+   定位一行得按输入框的值找（跟资源列表那边一个道理）。
+   标题那个是「我的」那一栏里第一个 text 输入框；对方那栏的标题是 span，
+   这里读不到，正好不会误认。 */
+const cdTitle = (row) => {
+  const i = row && findAll(row, (n) => n.tagName === 'INPUT' && n.type === 'text')[0];
+  return i ? i.value : '';
+};
+const cdDueOf = (row) => {
+  const i = row && findAll(row, (n) => n.tagName === 'INPUT' && n.type === 'date')[0];
+  return i ? i.value : '';
+};
+/* 只在**待办分区**里找行，不碰「已完成」折叠区里的那些 —— 混在一起的话
+   「它还在不在待办里」这种断言永远为真，等于没查。 */
+const cdTodoRows = () => byCls($('cd-cols'), 'cd-group').flatMap((g) => byCls(g, 'item'));
+const cdFind = (t) => cdTodoRows().find((r) => cdTitle(r) === t);
+const cdBtn = (t, label) => btns(cdFind(t), label)[0];
+
+ok(cdTitle(meCd[0]) === '交实验数据' && cdTitle(meCd[1]) === '交开题报告',
+  '待办按截止日从近到远排 —— 已经过期的那条排在最前面：' + meCd.map(cdTitle).join(' | '));
+/* ⚠️ 上面那条其实**测不出段内排序**：那两条分属「今天」和「本周」，
+   谁在前是分段顺序定的，跟段内怎么排没关系（把排序反过来它照样绿）。
+   临时塞一条**同段**的（也过期了），两条都落在「今天」里才看得出先后。 */
+DB.goals.push({
+  id: 'tmp-cd-order', owner: ME, title: '临时·过期一天', detail: '', due_date: isoOff(-1),
+  period_start: D0, target: 1, progress: 0, done: false, done_at: null, priority: '',
+});
+$('btn-refresh').fire('click'); await tick();
+const todayRows = byCls(byCls(cdWhoNow()[0], 'cd-group')[0], 'item').map(cdTitle);
+ok(todayRows.join(' | ') === '交实验数据 | 临时·过期一天',
+  '同一段里也是截止日近的在前（过期 5 天的压在过期 1 天的前面）：' + todayRows.join(' | '));
+DB.goals = DB.goals.filter((g) => g.id !== 'tmp-cd-order');
+$('btn-refresh').fire('click'); await tick();
+ok(byCls(cdWhoNow()[0], 'item').length === 2 && !cdFind('临时·过期一天'),
+  '收尾：临时那条清掉，回到 2 条待办');
 const pillOf = (row) => byCls(row, 'pill')[0];
 ok(pillOf(meCd[0]).textContent === '已过期 5 天',
   '过期 5 天 → 「已过期 5 天」，实际「' + pillOf(meCd[0]).textContent + '」');
@@ -612,8 +751,10 @@ ok(hasCls(pillOf(meCd[0]), 'bad'), '过期 / 今天到期 → bad 药丸（红�
 ok(pillOf(meCd[1]).textContent === '还剩 2 天',
   '还剩 2 天 → 「还剩 2 天」，实际「' + pillOf(meCd[1]).textContent + '」');
 ok(hasCls(pillOf(meCd[1]), 'warn'), '3 天内到期 → warn 药丸');
-ok(meCd[1].textContent.includes('截止 ') && /周[日一二三四五六]/.test(meCd[1].textContent),
-  '每条都写出截止日（带星期几）：' + meCd[1].textContent);
+ok(cdDueOf(meCd[1]) === D2,
+  '我这栏的截止日就是就地编辑的日期框，值等于那条记录的截止日：' + cdDueOf(meCd[1]));
+ok(meCd[1].textContent.includes('截止'),
+  '「截止」两个字还在，不然单摆一个日期框看不出那是什么');
 /* 颜色只是辅助。药丸里必须自己说出还剩几天 ——
    色觉障碍、打印、强制配色下都要能读出来 */
 ok(/还剩|到期|过期/.test(pillOf(meCd[0]).textContent) &&
@@ -624,9 +765,25 @@ const otCd = byCls(cdWho[1], 'item');
 ok(otCd.length === 1, '对方那一栏也在（这一页看的是两人的共同进度）');
 ok(otCd[0].textContent.includes('预约答辩教室'), '对方已完成的那条也在');
 ok(hasCls(otCd[0], 'done'), '已完成的行变淡（.item.done）');
-const cdSep = find(cdWho[1], (n) => hasCls(n, 'cd-sep'));
-ok(cdSep && cdSep.textContent === '已完成', '已完成的那条落在「已完成」分隔线下面');
-ok(byCls(cdWho[0], 'cd-sep').length === 0, '没有已完成时不留一条空的分隔线');
+/* 完成区：折进一个默认收起的 <details> 里。默认收起是重点 ——
+   攒到几十件之后，已经做完的那些天天占着视线，今天该干什么反而看不见。 */
+const otFold = find(cdWho[1], (n) => n.tagName === 'DETAILS');
+ok(otFold && hasCls(otFold, 'cd-fold'), '对方那条已完成折进「已完成」区（<details>）');
+ok(!!otFold && otFold.getAttribute('open') == null, '完成区默认收起（不带 open）');
+const otSum = otFold && find(otFold, (n) => n.tagName === 'SUMMARY');
+ok(!!otSum && otSum.textContent.includes('已完成 1 件'),
+  '折叠头上就报了件数，不用展开也知道有几件：' + (otSum ? otSum.textContent : '(没有 summary)'));
+ok(byCls(cdWho[1], 'item').length === 1, '折起来不等于删了 —— 那一行仍在 DOM 里');
+ok(!find(cdWho[0], (n) => n.tagName === 'DETAILS'), '我这栏没有已完成的，就不冒出一个空的完成区');
+/* 分区：今天 / 本周 / 以后。过期的那条并进「今天」排最前，不是单独一档。 */
+const gNames = byCls(cdWho[0], 'cd-name').map((n) => n.textContent);
+ok(gNames.join('/') === '今天/本周',
+  '过期 5 天的并进「今天」、2 天后的进「本周」：' + gNames.join('/'));
+const cdGN = byCls(cdWho[0], 'cd-n').map((n) => n.textContent);
+ok(cdGN.length === 2 && /1/.test(cdGN[0]), '每个分区头右边带着件数：' + cdGN.join(' / '));
+ok(byCls(cdWho[0], 'cd-group').length === 2, '两个有内容的区各是一个 .cd-group：' + byCls(cdWho[0], 'cd-group').length);
+const otNames = byCls(cdWho[1], 'cd-name').map((n) => n.textContent);
+ok(otNames.length === 0, '只有已完成的行不再画空的分区头：' + otNames.join('/'));
 
 ok($('cd-sub').textContent.includes('待办 2 件'), '副标题报待办件数：' + $('cd-sub').textContent);
 ok($('cd-sub').textContent.includes('交实验数据'), '副标题点名最急的那一件');
@@ -705,24 +862,25 @@ if (isoOff(1).startsWith('2026-09')) {
      cellOfIso(isoOff(1)).title.includes('截止：临时·同天到期的另一件'),
     '两件都在悬停明细里，一件不少');
 }
-btns(byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·同天到期的另一件')), '删除')[0]
-  .fire('click'); await tick(); await tick();
-ok(!DB.goals.some((g) => g.title === '临时·同天到期的另一件'), '（清掉这条同天到期的）');
+/* 清掉这条同天到期的。**这里不走界面上的「删除」按钮** —— 删除现在带 5 秒撤回
+   窗口，会留一个待删状态给后面几十条断言；删除那条路径在下面单独走一遍。 */
+DB.goals = DB.goals.filter((g) => g.title !== '临时·同天到期的另一件');
+$('btn-refresh').fire('click'); await tick(); await tick();
 
-const newRow = byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·明天要交的'));
+const newRow = cdFind('临时·明天要交的');
 ok(!!newRow, '加完立刻出现在列表里（不用手动刷新）');
-ok(byCls(newRow, 'pill')[0].textContent === '明天到期',
+ok(!!newRow && byCls(newRow, 'pill')[0].textContent === '明天到期',
   '明天到期 → 「明天到期」，实际「' + (newRow ? byCls(newRow, 'pill')[0].textContent : '') + '」');
 
 await addCd('临时·今天要交的', isoOff(0));
-const row0 = byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·今天要交的'));
-ok(byCls(row0, 'pill')[0].textContent === '今天到期',
+const row0 = cdFind('临时·今天要交的');
+ok(!!row0 && byCls(row0, 'pill')[0].textContent === '今天到期',
   '今天到期 → 「今天到期」，实际「' + (row0 ? byCls(row0, 'pill')[0].textContent : '') + '」');
-ok(hasCls(byCls(row0, 'pill')[0], 'bad'), '今天到期算最急的一档（bad）');
+ok(!!row0 && hasCls(byCls(row0, 'pill')[0], 'bad'), '今天到期算最急的一档（bad）');
 
 await addCd('临时·昨天该交的', DM1);
-const rowM1 = byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·昨天该交的'));
-ok(byCls(rowM1, 'pill')[0].textContent === '昨天到期',
+const rowM1 = cdFind('临时·昨天该交的');
+ok(!!rowM1 && byCls(rowM1, 'pill')[0].textContent === '昨天到期',
   '过期 1 天 → 「昨天到期」而不是「已过期 1 天」（说人话）：' +
   (rowM1 ? byCls(rowM1, 'pill')[0].textContent : ''));
 
@@ -734,101 +892,198 @@ ok(DB.goals.length === nGoalsBefore, '只写了空格 → 不写库');
 ok($('toast').textContent.includes('先写要完成什么'), '并说清楚缺什么：' + $('toast').textContent);
 
 console.log('── 倒计时：点「完成」 ──');
-const doneRow = byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·昨天该交的'));
-btns(doneRow, '完成')[0].fire('click'); await tick(); await tick();
+cdBtn('临时·昨天该交的', '完成').fire('click'); await tick(); await tick();
 const gDone = DB.goals.find((g) => g.title === '临时·昨天该交的');
 ok(gDone && gDone.done === true, '点「完成」真的把 done 写上了');
 ok(gDone && typeof gDone.done_at === 'string', 'done_at 也写了（月历靠它归日）');
-ok(byCls($('cd-cols'), 'cd-sep').length >= 1, '完成后挪到「已完成」那一段下面去');
+/* 完成后落进「已完成」折叠区（默认收起），不再平铺在待办分区里 */
+const myFold = find(cdWhoNow()[0], (n) => n.tagName === 'DETAILS' && hasCls(n, 'cd-fold'));
+ok(!!myFold, '完成后我这一栏也冒出「已完成」折叠区');
+ok(!!myFold && myFold.getAttribute('open') == null, '新冒出来的完成区也是默认收起');
+ok(!!myFold && byCls(myFold, 'item').length === 1, '刚完成的那条就在折叠区里，一条不多不少');
+ok(cdFind('临时·昨天该交的') === undefined,
+  '它同时从待办分区里消失了 —— 不该两处都画一条');
 /* 完成后不再提醒：那天在月历上只以「完成」的身份出现，不该还挂着「截」 */
 if (DM1.startsWith('2026-09') && DM9.startsWith('2026-09')) {
   ok(find(cellOfIso(DM1), (n) => hasCls(n, 'dl')) === null &&
      find(cellOfIso(DM9), (n) => hasCls(n, 'dl')) === null,
     '刚完成的那条也不再标「截」');
 }
-ok($('cd-cols').textContent.includes('临时·昨天该交的'), '完成后整页重画没抛错');
+ok(cdTitle(byCls(myFold, 'item')[0]) === '临时·昨天该交的',
+  '完成后整页重画没抛错，那条在折叠区里好好的');
 
-console.log('── 倒计时：删除 ──');
-const delRow = byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·明天要交的'));
-btns(delRow, '删除')[0].fire('click'); await tick(); await tick();
-ok(!DB.goals.some((g) => g.title === '临时·明天要交的'), '点「删除」真的删掉了那一行');
-ok(!$('cd-cols').textContent.includes('临时·明天要交的'), '删完列表里也没了');
+/* ── 删除：不弹确认框，改成 5 秒内可以撤回 ──────────────────────
+   她：「删除不弹确认框，给 5 秒 Undo 提示条，误删点一下回来」。
+   实现上是**延迟真删**：点下去的 5 秒内库里一行没动，只是界面上先摘掉。
+   这么做的理由是「先删后建」那套会换 id —— 外键级联的关联全丢，
+   撤回等于新建一条残缺的。延迟真删没有这个问题。
+   测试里不等这 5 秒（等的话整个用例要多跑 5 秒）：改成验「这 5 秒里库还在」
+   —— 变异成立刻真删，下面第一条断言就会红。 */
+console.log('── 倒计时：删除 → 5 秒内可以撤回 ──');
+const nGoalsBeforeDel = DB.goals.length;
+cdBtn('临时·明天要交的', '删除').fire('click'); await tick();
+ok(cdFind('临时·明天要交的') === undefined, '点「删除」那一行立刻从界面上消失');
+ok(DB.goals.some((g) => g.title === '临时·明天要交的'),
+  '但库里那行还在 —— 真删推迟 5 秒，留出撤回的窗口');
+ok($('undo').hidden === false, '底部冒出「撤回」条');
+ok($('undo').textContent.includes('已删除'), '条上说了删了什么：' + $('undo').textContent);
+const cdUndoBtn = find($('undo'), (n) => n.tagName === 'BUTTON');
+ok(!!cdUndoBtn, '条上有个按钮能点（不只是一行说明）');
+
+/* 待删的那 5 秒里刷新一下：不能又冒回来 —— 那等于「撤回窗口随刷新失效」 */
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok(cdFind('临时·明天要交的') === undefined,
+  '这 5 秒里刷新页面，那一行也不会冒回来（live() 把它滤掉了）');
+
+cdUndoBtn.fire('click'); await tick(); await tick();
+ok(DB.goals.some((g) => g.title === '临时·明天要交的') && DB.goals.length === nGoalsBeforeDel,
+  '点「撤回」那行回来了，库里一行没少');
+ok(!!cdFind('临时·明天要交的'), '界面上也回来了，回到原来的分区里');
+ok($('undo').hidden === true, '撤回后条收起来');
+ok($('toast').textContent.includes('已恢复'), '并且说了一声「已恢复」：' + $('toast').textContent);
+
+/* 撤回之后重新点删除 —— 验两件事：① 条上的状态没粘住（还能再弹一次）；
+   ② 条上点得出删的是哪一条（误删时才知道撤回的是什么）。然后撤回清干净，
+   不给后面几十条断言留一个待删状态。 */
+cdBtn('临时·明天要交的', '删除').fire('click'); await tick();
+ok($('undo').hidden === false, '（再删一次，条又出来了 —— 上一轮的状态没粘住）');
+ok($('undo').textContent.includes('明天要交的'),
+  '条上点名删的是哪一条，误删时才知道撤回的是什么：' + $('undo').textContent);
+find($('undo'), (n) => n.tagName === 'BUTTON').fire('click'); await tick(); await tick();
+ok($('undo').hidden === true && !!cdFind('临时·明天要交的'),
+  '（撤回，清掉待删状态回到待办里，不给后面的用例留尾巴）');
 
 /* 收尾：把这一节临时加的倒计时清掉，别影响后面的用例 */
 DB.goals = DB.goals.filter((g) => !g.title.startsWith('临时·'));
 $('btn-refresh').fire('click'); await tick(); await tick();
-ok($('cd-cols').textContent.includes('交开题报告'), '收尾后回到 3 条基准数据');
+ok(!!cdFind('交开题报告'), '收尾后回到 3 条基准数据');
 
-/* ── 倒计时：改一条 ──────────────────────────────────────────
-   她：「倒计时的内容提交后还可以编辑」。
-   要点：① 走 update 不是 insert（否则一改多一行）；
-        ② **只动标题/截止日/说明**，done / progress / target / period_start 一律不碰
-           —— 改个标题不该把完成状态和占位字段顺手重置掉；
-        ③ 有「取消」能退回新建态。 */
-console.log('── 倒计时：改一条 ──');
-const editRow = (t) => byCls($('cd-cols'), 'item').find((i) => i.textContent.includes(t));
+/* ── 倒计时：在卡片上就地改（没有「改」按钮那一套）─────────────
+   她：「就地编辑 / 点标题直接改，不弹窗不跳页；失焦即自动保存」。
+   要点跟学习资源那张卡一致：
+     ① 走 update 不是 insert（否则一改多一行）；
+     ② 只动改的那个字段，done / progress / target / period_start 一律不碰
+        —— 改个标题不该把完成状态和占位字段顺手重置掉；
+     ③ 就地改**没有「保存」那一下**，所以存完必须说一声「已保存」；
+     ④ 标题 / 截止日决定这条落在哪一段 → 要重画；说明和优先级不影响位置
+        → 不重画（重画会把光标从输入框里踢出去，接着打字就打到空气里）。 */
+console.log('── 倒计时：在卡片上就地改 ──');
+const cdHtml = fs.readFileSync(path.join(DIR, 'index.html'), 'utf8');
 const eTgt = DB.goals.find((g) => g.title === '交实验数据');
 const eBefore = { id: eTgt.id, done: eTgt.done, progress: eTgt.progress,
                   target: eTgt.target, period_start: eTgt.period_start };
-btns(editRow('交实验数据'), '改')[0].fire('click');
-ok($('cd-title').value === '交实验数据', '点「改」把标题填回上面那个表单：' + $('cd-title').value);
-ok($('cd-due').value === DM5, '截止日也填回去了：' + $('cd-due').value);
-ok($('cd-add').textContent === '保存修改', '按钮变成「保存修改」');
-ok($('cd-cancel').hidden === false, '同时冒出「取消」');
+const eRow = cdFind('交实验数据');
+ok(!!eRow, '（先找到「交实验数据」那一行）');
+ok(cdBtn('交实验数据', '改') === undefined, '卡片上没有「改」按钮了');
+ok(cdHtml.indexOf('id="cd-cancel"') < 0, 'index.html 里那份「取消」也一起拆掉了');
+const eIns = (row) => findAll(row, (n) => n.tagName === 'INPUT');
+ok(!!eRow && eIns(eRow).length === 3 && eIns(eRow)[0].value === '交实验数据',
+  '标题就是卡片上的输入框，框里装着现在的标题：' +
+  (eRow ? eIns(eRow).map((i) => i.type + '=' + i.value).join(' | ') : '(没找到行)'));
+ok(!!eRow && eIns(eRow)[0].type === 'text' && eIns(eRow)[2].type === 'date',
+  '第一个是文本框（标题）、第三个是日期框（截止日），中间那个是说明');
+ok(cdDueOf(eRow) === DM5, '截止日框里就是那条的截止日：' + cdDueOf(eRow));
+ok(!!eRow && eIns(eRow)[0].getAttribute('placeholder') === '要完成什么',
+  '空标题时那行灰字提示还在：' + (eRow ? eIns(eRow)[0].getAttribute('placeholder') : ''));
 
-$('cd-title').value = '交实验数据（改过）';
-$('cd-due').value = isoOff(9);
-$('cd-add').fire('click'); await tick(); await tick();
+/* 改标题：走 update、不碰别的字段、说一声「已保存」、并且重画（标题决定排序） */
+clearToast();
+eIns(eRow)[0].value = '交实验数据（改过）';
+eIns(eRow)[0].fire('change'); await tick(); await tick();
 const eAfter = DB.goals.find((g) => g.id === eBefore.id);
 ok(!!eAfter, '改完还是**原来那一行**，不是新增一行（id 没变）');
 ok(DB.goals.filter((g) => g.title === '交实验数据（改过）').length === 1, '库里只有一条改过的');
 ok(eAfter && eAfter.title === '交实验数据（改过）', '新标题写进去了');
-ok(eAfter && eAfter.due_date === isoOff(9), '新截止日写进去了：' + (eAfter && eAfter.due_date));
 ok(eAfter && eAfter.done === eBefore.done && eAfter.progress === eBefore.progress &&
    eAfter.target === eBefore.target && eAfter.period_start === eBefore.period_start,
    '完成状态和占位字段一个都没被顺手重置');
-ok($('cd-add').textContent === '加上', '存完自动退回「新建」状态');
-ok($('cd-cancel').hidden === true, '「取消」跟着收起来');
-ok($('cd-title').value === '', '输入框清空了');
+ok($('toast').textContent === '已保存',
+  '就地改没有「保存」那一下，不说一声她不知道到底存上没有：' + $('toast').textContent);
 
-/* 取消 = 真的什么都没改。测法是接着按「加上」必须**新增**一条，
-   而不是偷偷去 update 刚才那条 —— 后者肉眼看不出来。 */
-btns(editRow('交实验数据（改过）'), '改')[0].fire('click');
-ok($('cd-add').textContent === '保存修改', '（再进一次编辑态）');
-$('cd-cancel').fire('click');
-ok($('cd-add').textContent === '加上', '点「取消」退回新建态');
-ok($('cd-title').value === '', '取消也把输入框清干净');
-$('cd-title').value = '临时·取消之后新加的';
-$('cd-due').value = isoOff(2);
-$('cd-add').fire('click'); await tick(); await tick();
-ok(DB.goals.some((g) => g.title === '临时·取消之后新加的'), '取消之后「加上」是新加一条（没被编辑态劫持）');
-ok(DB.goals.filter((g) => g.title === '交实验数据（改过）').length === 1, '刚才那条没被这次新增改掉');
+/* 改说明：不重画 —— 抓住那个输入框节点，存完它还得是同一个节点 */
+const noteIn = () => eIns(cdFind('交实验数据（改过）'))[1];
+const noteNode = noteIn();
+noteNode.value = '改了说明';
+noteNode.fire('change'); await tick(); await tick();
+ok(DB.goals.find((g) => g.id === eBefore.id).detail === '改了说明', '说明也写进去了');
+ok(noteIn() === noteNode,
+  '改说明不重画列表 —— 重画会把光标踢出输入框，接着打字就打到空气里');
 
-const nBeforeCd = DB.goals.length;
-$('cd-title').value = '   ';
-$('cd-add').fire('click'); await tick(); await tick();
-ok(DB.goals.length === nBeforeCd, '标题只有空格 → 不写库');
-ok($('toast').textContent.includes('先写要完成什么'), '并且说清楚要先写标题：' + $('toast').textContent);
+/* 改截止日：换一天就可能换一段，必须重画 */
+const dueNode = eIns(cdFind('交实验数据（改过）'))[2];
+dueNode.value = isoOff(20);
+dueNode.fire('change'); await tick(); await tick();
+ok(DB.goals.find((g) => g.id === eBefore.id).due_date === isoOff(20), '新截止日写进去了');
+ok(eIns(cdFind('交实验数据（改过）'))[2] !== dueNode,
+  '改截止日会重画列表 —— 节点换新的是对的，它要换段了');
+const namesNow = byCls(cdWhoNow()[0], 'cd-name').map((n) => n.textContent);
+ok(namesNow.join('/') === '本周/以后',
+  '20 天后 → 从「今天」挪到「以后」段，中间空掉的那段不画：' + namesNow.join('/'));
 
-/* 正在改的那条被另一台设备删了 → 表单必须退回「新建」。
-   不兜这一下的话，「保存修改」会 update 到 0 行：页面看着像保存成功了，
-   其实什么都没发生 —— 这种「静默失败」最难查。 */
-const goner = DB.goals.find((g) => g.title === '临时·取消之后新加的');
-btns(editRow('临时·取消之后新加的'), '改')[0].fire('click');
-ok($('cd-add').textContent === '保存修改', '（第三次进编辑态）');
-DB.goals = DB.goals.filter((g) => g.id !== goner.id);   // 模拟被另一边删掉
+/* 清空日期框 → 不写库。空日期存进去这条就掉进「今天」那一段骗人
+   （「今天到期」其实是「没填日期」）。 */
+clearToast();
+const dueNode3 = eIns(cdFind('交实验数据（改过）'))[2];
+dueNode3.value = '';
+dueNode3.fire('change'); await tick(); await tick();
+ok(DB.goals.find((g) => g.id === eBefore.id).due_date === isoOff(20),
+  '日期框清空 → 不写库，截止日还是原来那个');
+ok($('toast').textContent.includes('得选一个日期'), '并且说清楚该干什么：' + $('toast').textContent);
+ok(eIns(cdFind('交实验数据（改过）'))[2].value === isoOff(20),
+  '框里弹回原来的日期，不留一个空框在那儿');
+
+/* 空标题不写库，并且弹回原值 —— 名字空着这一行就是个不知道是什么的东西。
+   ⚠️ 先抓住那一行再改值，别改完再按标题找：标题框里刚被改成空格，
+      cdFind（按框里的值认行）当场就找不到它了 —— 第一版就是这么把自己绕进去的。 */
+const keepTitle = DB.goals.find((g) => g.id === eBefore.id).title;
+const keepRow = cdFind(keepTitle);
+ok(!!keepRow, '（找到那条改过标题的）');
+eIns(keepRow)[0].value = '   ';
+eIns(keepRow)[0].fire('change'); await tick(); await tick();
+ok(DB.goals.find((g) => g.id === eBefore.id).title === keepTitle, '标题只有空格 → 不写库');
+ok($('toast').textContent.includes('标题不能空着'), '并且说清楚缺什么：' + $('toast').textContent);
+ok(cdTitle(cdFind(keepTitle)) === keepTitle, '框里弹回原来的标题，不留一个空格在那儿');
+
+/* ── 优先级：只在左边一条 3px 色条 ──────────────────────────────
+   她：「优先级只给左边 3px 色条，不加整块背景」。色条本身在 CSS 里（.pri-N::before），
+   这儿钉的是「类加得对不对、值存得对不对」—— 类错了色条就画不出来。 */
+console.log('── 倒计时：优先级 ──');
+const priOf = (t) => { const r = cdFind(t); return r && find(r, (n) => n.tagName === 'SELECT'); };
+ok(!!priOf(keepTitle), '我的卡片上有优先级下拉');
+ok(!hasCls(cdFind(keepTitle), 'pri'),
+  '没标优先级时**不加** pri 类 —— 左边不留一条灰条，跟别的行左对齐');
+priOf(keepTitle).value = 'hi';
+priOf(keepTitle).fire('change'); await tick(); await tick();
+ok(DB.goals.find((g) => g.id === eBefore.id).priority === 'hi', '选「高」写进库了');
+ok(cdFind(keepTitle).className === 'item pri pri-hi',
+  '卡片上就这三个类，色条交给 CSS 的 .pri-hi::before：' + cdFind(keepTitle).className);
+ok(!hasCls(cdFind(keepTitle), 'done'), '标优先级不会把它变成「已完成」那一档');
+priOf(keepTitle).value = '';
+priOf(keepTitle).fire('change'); await tick(); await tick();
+ok(DB.goals.find((g) => g.id === eBefore.id).priority === '', '选回「不标」也写进去（清得掉）');
+ok(!hasCls(cdFind(keepTitle), 'pri'), '清掉之后色条也没了');
+
+/* setup-11-priority.sql 还没跑：goals 表里没有 priority 这一列。
+   探测是**单独一次 select**（不能靠「行里带不带这个 key」猜：goals 一行都没有时
+   恰恰是第一次用、最需要知道该不该显示那个下拉的时候）。
+   宁可**不显示**下拉：显示了、她选完、插入却整个失败 ——
+   那就成了「因为标了个优先级，任务反而加不上了」。 */
+console.log('── 倒计时：setup-11 还没跑时 ──');
+console.log('DEBUG 重画前', keepTitle, JSON.stringify(cdTodoRows().map(cdTitle)));
+failSelect = 'goals:priority';
 $('btn-refresh').fire('click'); await tick(); await tick();
-ok($('cd-add').textContent === '加上', '正在改的那条没了 → 表单自己退回「新建」');
-ok($('cd-cancel').hidden === true, '「取消」也跟着收起');
+console.log('DEBUG 重画后', JSON.stringify(cdTodoRows().map(cdTitle)));
+ok(!priOf(keepTitle), '探到 priority 列不存在 → 优先级下拉整个不显示');
+ok(!!cdFind(keepTitle), '这一块降级了，但倒计时照常看得见（别的字段一个不少）');
+ok(eIns(cdFind(keepTitle)).length === 3, '标题 / 说明 / 截止日三个框照常可改');
 
-/* 收尾：清掉这一节临时造的行，并把改过的那条**按 id 还原**。
-   ⚠️ 改过的那条不能也起个「临时·」开头的名字 —— 会被上面那句清理规则一起删掉，
-      后面所有断言就都找不到「交实验数据」了（第一版就是这么错的）。 */
-DB.goals = DB.goals.filter((g) => !g.title.startsWith('临时·'));
+/* 收尾：把改过的那条**按 id 还原**。
+   ⚠️ 不能靠「临时·」前缀清理它 —— 它不叫那个名字，而且后面几十条断言
+      都要靠「交实验数据」找到它（第一版就是这么错的）。 */
 const eBack = DB.goals.find((g) => g.id === eBefore.id);
-if (eBack) { eBack.title = '交实验数据'; eBack.due_date = DM5; }
+if (eBack) { eBack.title = '交实验数据'; eBack.due_date = DM5; eBack.detail = ''; eBack.priority = ''; }
 $('btn-refresh').fire('click'); await tick(); await tick();
-ok($('cd-cols').textContent.includes('交实验数据'), '收尾后「交实验数据」回来了');
+ok(!!cdFind('交实验数据'), '收尾后「交实验数据」回来了（按 id 还原，不是按名字）');
 
 /* setup-7-countdown.sql 还没跑：goals 表里根本没有 due_date 这一列。
    要求：① 说清楚去跑哪个脚本，不甩 Postgres 原文；② 不静默失败；
@@ -844,7 +1099,7 @@ ok($('cd-warn').textContent.includes('setup-7-countdown.sql'), '提示直接指�
 ok($('toast').textContent.includes('setup-7-countdown.sql'),
   '没把 Postgres 原文甩给她：' + $('toast').textContent);
 ok(!DB.goals.some((g) => g.title.startsWith('临时·列还没建')), '那一行没写进库');
-ok($('cd-cols').textContent.includes('交开题报告'), '这一块降级了，但已有的内容照常看得见');
+ok(!!cdFind('交开题报告'), '这一块降级了，但已有的内容照常看得见');
 
 const snapCd = {
   app: 'study-collab', version: 1,
@@ -1348,7 +1603,7 @@ globalThis.confirm = () => { asked2++; return true; };
 await pickLink(subRowOf($('tasks-cols'), '第 5-8 讲'), 'subtask:' + c3r.id);
 ok(DB.links.length === 3, '挂上第三条了，好几条并存，实际 ' + DB.links.length);
 ok(asked2 === 0, '这一圈此刻全都没完成、状态本来就一致 → 不弹确认框烦她');
-globalThis.confirm = () => true;
+globalThis.confirm = () => { confirmCalls++; return true; };
 ok(byCls(subRowOf($('tasks-cols'), '第 5-8 讲'), 'lk').length === 3, '三个小方块并排显示');
 
 /* ── 反方向：在「大任务拆解」里勾那一步，书那边跟着完成 ── */
@@ -1415,18 +1670,39 @@ byCls(rowS3b, 'lk')[0].fire('click'); await tick(); await tick();
 ok(s3r.link_id == null && c1r.link_id == null,
   '点掉旧的那条时，**两边**的 link_id 都清掉，不留单向指针');
 
-/* ── 删掉一条，挂着它的关联要一起清 ── */
+/* ── 删掉一条：跟别处同一个规矩（不弹框、延迟真删），挂着的关联要一起清 ──
+   这里除了「删掉」本身，钉的是**真删那一刻**的两件收尾活儿：
+     ① dropLinksOf：links 表里指着它的行不能留；
+     ② 反方向的 link_id：对端那条 subtask 自己那一列也指着它，得一起清空，
+        否则对端就成了指着一个不存在 id 的孤儿（勾选联动会勾到空气）。
+   ①在 removeRow 里、②在 beforeDelete 钩子里 —— 两条都得真发生，删干净了才算数。 */
 const nLinksBeforeDel = DB.links.length;
 tabs[4].fire('click'); await tick();
+/* 给对端埋一根反方向的指针，看它删完会不会被一起清掉。
+   ⚠️ 必须**互相指着**：只埋单向的话，要清的那个值本来就是 null，
+   断言永远为真 —— 第一版就是这么把这条漏过去的（变异检验抓出来的）。 */
+c2r.link_id = s2r.id;
+s2r.link_id = c2r.id;
+$('btn-refresh').fire('click'); await tick();
+tabs[4].fire('click'); await tick();
+const confirmBeforeDel = confirmCalls;
 btns(subRowOf(byResName('线性代数应该这样学'), '第 2 章'), '✕')[0].fire('click');
 await tick(); await tick();
-ok(!DB.subtasks.some((x) => x.id === c2r.id), '第 2 章删掉了');
+ok(confirmCalls === confirmBeforeDel, '删章节也不弹确认框了，点下去就是删');
+ok(!subRowOf(byResName('线性代数应该这样学'), '第 2 章'), '那一章立刻从界面上消失');
+ok(DB.subtasks.some((x) => x.id === c2r.id), '但库里还在 —— 留 5 秒给她撤回');
+ok($('undo').hidden === false && $('undo').textContent.includes('第 2 章'),
+  '底部条上点名删的是哪一章：' + $('undo').textContent);
+runLongTimers(); await tick(); await tick();
+ok(!DB.subtasks.some((x) => x.id === c2r.id), '5 秒过去 → 这次是真删了');
 ok(DB.links.length === nLinksBeforeDel - 1,
   '挂着它的关联也一起清了，不留指着空气的行：' + nLinksBeforeDel + ' → ' + DB.links.length);
 ok(DB.links.every((l) => l.a_id !== c2r.id && l.b_id !== c2r.id),
   'links 里再也找不到它');
+ok(s2r.link_id == null, '对端那根反方向的指针也清了（不留指着一个不存在 id 的孤儿）');
 
-/* 收尾：把第 2 章放回去、状态逐条还原、关联清空，后面的用例照旧 */
+/* 收尾：把第 2 章放回去、状态逐条还原、关联清空，后面的用例照旧。
+   （删走的那条得**放回数组**，不然后面「这本书还有没勾过的章可以挑」就少一章） */
 DB.subtasks.push(c2r);
 Object.assign(c1r, c1keep);
 Object.assign(c2r, c2keep);
@@ -1824,12 +2100,25 @@ await tick();
 ok(byCls($('ex-cols'), 'item').length === 5, '回到全部 → 五场');
 ok($('ex-sub').textContent.includes('一共 5 场'), '小结回到全部');
 
-console.log('── 考试成绩：删除 ──');
+/* 删除走的是同一条路（延迟真删 + 5 秒撤回条），考试页也一样。
+   这儿验一遍是为了钉住「删除那一套不是只有倒计时在用」。 */
+console.log('── 考试成绩：删除 → 5 秒内可以撤回 ──');
 const examCount3 = DB.exams.length;
-btns(rowOf('还没出分的那场'), '删除')[0].fire('click'); await tick(); await tick();
-ok(DB.exams.length === examCount3 - 1, '删除真的删掉一行');
-ok(!DB.exams.some((e) => e.name === '还没出分的那场'), '删的就是那一场');
-ok($('ex-cols').textContent.includes('还没出分的那场') === false, '删完列表里也没了');
+btns(rowOf('还没出分的那场'), '删除')[0].fire('click'); await tick();
+ok($('ex-cols').textContent.includes('还没出分的那场') === false, '点「删除」界面上立刻没了');
+ok(DB.exams.length === examCount3 && DB.exams.some((e) => e.name === '还没出分的那场'),
+  '库里那行还在 —— 真删推迟 5 秒，留出撤回的窗口');
+ok($('undo').hidden === false, '撤回到条也冒出来了（不是只有倒计时那一页有）');
+find($('undo'), (n) => n.tagName === 'BUTTON').fire('click'); await tick(); await tick();
+ok(DB.exams.length === examCount3 && $('ex-cols').textContent.includes('还没出分的那场'),
+  '点「撤回」那一场回来了，库里一行没少');
+ok($('undo').hidden === true, '（撤回后条收起来，不给后面的用例留尾巴）');
+/* 这一节后面的断言要靠「少了一场」。等 5 秒太慢，所以直接把库里那条摘掉再刷新 ——
+   效果等于 5 秒后那个定时器干的事，顺便也验了「刷新之后列表跟着库走」。 */
+DB.exams = DB.exams.filter((e) => e.name !== '还没出分的那场');
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok(DB.exams.length === examCount3 - 1 && $('ex-cols').textContent.includes('还没出分的那场') === false,
+  '少了一场之后重画，列表里也没了');
 
 console.log('── 考试成绩：这条链路断了也不能连累别的页签 ──');
 /* setup-6-exams.sql 还没跑：exams 表根本不存在（select 就报 schema cache 找不到）。
@@ -1856,7 +2145,7 @@ ok($('ex-lead').textContent.includes('setup-6-exams.sql'), '页头也说了要�
 ok($('ex-cols').textContent.includes('这张表还没建'), '这一页降级成「这张表还没建」，没抛异常');
 ok(tabs[3].dataset.tab === 'daily', '（页签对象还在）');
 tabs[1].fire('click'); await tick();
-ok($('cd-cols').textContent.includes('刷新后才出现的倒计时'),
+ok(!!cdFind('刷新后才出现的倒计时'),
   '月度任务页读到的是刷新后的数据（exams 读失败没把六张表带崩）');
 tabs[4].fire('click'); await tick();
 ok($('res-tiles').textContent.includes('资源总数'), '资源页照常渲染');
@@ -2454,6 +2743,51 @@ ok(/\.item\s+\.inline:focus\s*\{[^}]*border-color\s*:\s*var\(--series-1\)/.test(
 ok(/\.item\s+\.inline\s*\{[^}]*padding\s*:\s*2px\s+4px/.test(cssNoComment),
   '内边距恒定、不带负 margin —— 聚焦时盒子尺寸不变，旁边那块不会跟着抖一下');
 ok(!/\.item\.editing/.test(cssNoComment), '「正在改」那套描边样式跟着拆掉了，不留死代码');
+
+/* ── 2026-09-26：语义色收敛 / 视觉层级 / 撤回条 / 优先级色条 ──
+   这四条都是「看」出来的东西，假 DOM 断言碰不到，只能在 CSS 侧钉住。 */
+ok(/\.item\s+\.t\s*\{[^}]*font-size\s*:\s*15px/.test(cssNoComment),
+  '标题 15px —— 跟 12px 的说明、12px 的元信息拉开三级，别再全挤在一个字号上');
+ok(/\.item\s+\.m\s*\{[^}]*font-size\s*:\s*12px/.test(cssNoComment),
+  '元信息 12px（原来 11.5px，跟 12px 的说明只差半档，等于没层级）');
+ok(!/\.pill\s*\{[^}]*border\s*:\s*1px/.test(cssNoComment),
+  '标签不再是描边式 —— 缩到 11px 时那圈细线看着发虚，改成浅色胶囊');
+ok(/\.pill\.ok\s*\{[^}]*color-mix\(in srgb,\s*var\(--good\)/.test(cssNoComment),
+  '「已完成」是一层淡绿底');
+ok(/\.pill\.bad\s*\{[^}]*color-mix\(in srgb,\s*var\(--critical\)/.test(cssNoComment),
+  '「逾期」是一层淡红底');
+ok(/\.pill\.ok\s*\{[^}]*color\s*:\s*var\(--text-primary\)/.test(cssNoComment),
+  '淡底上的字走主文字色 —— 同色字压同色淡底实测不到 AA（浅色底上红字只有 3.23:1）');
+/* 撤回条：浮在底部，位置比 toast 高一档，两者同时出现时都点得到 */
+ok(/\.undo\s*\{[^}]*position\s*:\s*fixed/.test(cssNoComment),
+  '撤回条浮在底部，不占页面流');
+ok(/\.undo\s*\{[^}]*bottom\s*:\s*78px/.test(cssNoComment),
+  '它比 toast（bottom:28px）高一档 —— toast 正在报别的事时这一条也得点得到');
+/* ⚠️ 回归点：.undo 写了 display:flex，靠的就是文件顶部那条 !important 的
+   [hidden] 兜底。删了它，点完撤回条会一直挂在屏幕上。 */
+ok(/\[hidden\]\s*\{\s*display\s*:\s*none\s*!important/.test(cssNoComment),
+  '撤回条靠文件顶部那条 [hidden]{display:none!important} 收起来（display:flex 压不过它）');
+/* 优先级：一条 3px 色条，不铺底 */
+ok(/\.item\.pri::before\s*\{[^}]*width\s*:\s*3px/.test(cssNoComment),
+  '优先级色条 3px —— 就是这个宽度，再宽就成「一块背景」了');
+ok(/\.item\.pri::before\s*\{[^}]*position\s*:\s*absolute/.test(cssNoComment),
+  '色条是 ::before 绝对定位画的，不占文字的位置');
+ok(/\.item\.pri\s*\{[^}]*padding-left\s*:\s*13px/.test(cssNoComment),
+  '有优先级的卡片左边让出地方，色条不压字');
+ok(!/\.item\.pri[^:]*\{[^}]*background\s*:/.test(cssNoComment),
+  '优先级**不铺整块背景** —— 铺了会把「逾期红」「完成绿」这两件要紧事淹掉');
+ok(!/\.pri-hi[^{]*\{[^}]*var\(--critical\)/.test(cssNoComment) &&
+   !/\.pri-hi[^{]*\{[^}]*var\(--good\)/.test(cssNoComment),
+  '优先级色条不占用红 / 绿 —— 红只留给逾期、绿只留给完成');
+ok(/\.item\.pri-hi::before\s*\{[^}]*var\(--series-1\)/.test(cssNoComment),
+  '「高」用系列色 1（不是红）');
+/* 分区 + 折叠 */
+ok(/\.cd-fold\s*>\s*summary\s*\{[^}]*cursor\s*:\s*pointer/.test(cssNoComment),
+  '「已完成 N 件」那个头是可点的（收起 / 展开）');
+ok(/\.cd-head\s+\.cd-name\s*\{[^}]*font-weight\s*:\s*700/.test(cssNoComment),
+  '分区头（今天 / 本周 / 以后）比条目名更重，扫一眼能分段');
+ok(/\.item\s+\.pri-sel\s*\{[^}]*border\s*:\s*1px\s+solid\s+transparent/.test(cssNoComment),
+  '优先级下拉跟就地编辑框一个手感：平时没边框、点进去才描边');
 
 /* 引一个**不存在**的自定义属性，浏览器会静默忽略整条声明 ——
    这类错没有任何别的机会被发现（假 DOM 不算 CSS，也没人去看渲染结果）。
