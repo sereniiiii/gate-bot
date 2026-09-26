@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>学习协作 · Study Together</title>
+<title>乐观者永远前行</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -14,8 +14,9 @@
     <div class="brand" aria-hidden="true">
       <span class="bdot a"></span><span class="bdot b"></span>
     </div>
-    <h1>学习协作</h1>
+    <h1>乐观者永远前行</h1>
     <p class="sub">两个人，各自一台设备，看到彼此的进度。</p>
+    <p class="motto" id="lg-motto"></p>
 
     <form id="login-form">
       <div class="field">
@@ -41,8 +42,9 @@
   <header class="top">
     <button class="av me clickable" id="me-av" title="点头换头像"></button>
     <div class="grow">
-      <h1>学习协作</h1>
+      <h1>乐观者永远前行</h1>
       <p class="sub" id="whoami">…</p>
+      <p class="motto" id="home-motto"></p>
     </div>
     <div class="row tight">
       <span class="pill" id="conn-pill">连接中…</span>
@@ -95,6 +97,7 @@
         <div><label class="f" for="cd-due">几月几号完成</label>
           <input type="date" id="cd-due"></div>
         <button class="primary" id="cd-add">加上</button>
+        <button id="cd-cancel" hidden>取消</button>
       </div>
       <div class="field" style="margin-top:10px">
         <label class="f" for="cd-detail">说明（可选）</label>
@@ -149,7 +152,10 @@
             <input type="text" id="g-detail" placeholder="怎么算完成？">
           </div>
           <p class="hint">周期 = 开始日 + 29 天，进度条按「进度 / 目标值」走。
-            已经改用上面的「倒计时」了，这块留着只是为了不弄丢以前记的东西。</p>
+            已经改用上面的「倒计时」了，这块留着只是为了不弄丢以前记的东西。<br>
+            每个目标下面的 <b>↔ 同一件事</b> 可以把它挂到大任务的某几步 / 某几章上。
+            <b>关联只做「看得出是一件事」，不会因为勾了一步就把 30 天目标标成完成</b> ——
+            那个进度条还是你自己推。</p>
         </div>
 
         <!-- 目标备忘录 —— 两个人各自的小目标与进度 -->
@@ -176,8 +182,9 @@
         <input type="text" id="t-detail" placeholder="总体说明">
       </div>
       <p class="hint">创建后会生成对应数量的空白小任务，你再逐个填内容。进度条 = 已完成小任务 / 总数。<br>
-        每条小任务右边的 <b>↔</b> 是「同一件事」：这一步如果其实就是某本书的某一章，
-        在那儿绑一下，以后勾任意一边，两边一起算完成。</p>
+        每条小任务下面的 <b>↔ 同一件事</b>：这一步如果其实就是某本书的某一章、
+        或者某个 30 天小目标，在那儿关联一下，以后勾任意一边，两边一起算完成。
+        <b>可以关联好几条</b>（一步 = 两本书的那几章），已经关联的每条是一个小方块，点一下就解开。</p>
     </div>
 
     <!-- 总览：所有大任务的完成率一览 -->
@@ -276,8 +283,9 @@
           <input type="number" id="r-chapters" min="0" max="200" step="1" placeholder="可留空"></div>
         <button class="primary" id="r-add">添加</button>
       </div>
-      <p class="hint">每一章右边的 <b>↔</b> 是「同一件事」：这一章如果就是某个大任务里的一步，
-        在那儿绑一下，以后勾任意一边，两边一起算完成。</p>
+      <p class="hint">每一章下面的 <b>↔ 同一件事</b>：这一章如果就是某个大任务里的一步，
+        在那儿关联一下，以后勾任意一边，两边一起算完成。<b>可以关联好几条</b>，
+        已经关联的每条是一个小方块，点一下就解开。</p>
     </div>
 
     <div class="card">
@@ -363,6 +371,23 @@
         <input type="file" id="file-import" accept=".json,application/json" hidden>
         <span class="hint" id="import-meta" style="margin:0"></span>
       </div>
+    </div>
+    <div class="card">
+      <h2>校训</h2>
+      <p class="hint" style="margin-top:0">
+        登录页和主页随机显示一句。两个人共用这一份清单，改完两边都会变。
+        <span id="mt-warn"></span>
+      </p>
+      <div class="row tight" id="mt-form" style="margin-top:12px">
+        <input type="text" id="mt-text" class="grow" placeholder="校训原文，例如：自强不息，厚德载物">
+        <input type="text" id="mt-school" style="max-width:150px" placeholder="哪所学校（可留空）">
+        <button class="primary" id="mt-add">加上</button>
+      </div>
+      <div class="row tight" style="margin-top:10px">
+        <button id="mt-shuffle">换一条看看</button>
+        <span class="hint" id="mt-now" style="margin:0"></span>
+      </div>
+      <div id="mt-list" style="margin-top:12px"></div>
     </div>
   </section>
 

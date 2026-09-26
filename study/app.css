@@ -56,6 +56,17 @@ h1{font-size:19px;margin:0;font-weight:650;letter-spacing:-.01em}
 h2{font-size:14px;margin:0 0 12px;font-weight:650}
 .sub{color:var(--muted);font-size:12.5px;margin:4px 0 0}
 .hint{font-size:11.5px;color:var(--muted);margin:5px 0 0}
+/* 校训：一句话，不能抢标题的戏。
+   用中文衬线（宋体一系）+ 一点字间距做出「引文」的味道 —— 不加底色、不加边框、
+   不加图标，页面已经够多卡片了，装饰一多就俗。
+   ⚠️ 颜色必须是 --text-secondary，**不能图好看用 --muted** ——
+      --muted 当正文只有 3.50:1，过不了 AA，这个坑踩过两次了。 */
+.motto{
+  font-family:"Songti SC","STSong","SimSun",Georgia,serif;
+  font-size:12.5px;color:var(--text-secondary);
+  margin:7px 0 0;letter-spacing:.04em;line-height:1.5;
+}
+.login-card .motto{font-size:13.5px;margin-top:11px;letter-spacing:.05em}
 .err{font-size:12.5px;color:var(--critical);margin:10px 0 0}
 b{font-weight:650}
 
@@ -134,16 +145,30 @@ button:disabled{opacity:.45;cursor:not-allowed}
 
 /* 小任务 */
 .subs{margin-top:9px;border-top:1px solid var(--grid);padding-top:9px}
-.sub{display:flex;gap:8px;align-items:flex-start;padding:5px 0;font-size:12.5px}
+/* flex-wrap 是给下面那条「↔ 同一件事」让位的：一行里还是 [勾选框][名字][删除]，
+   关联那条（flex-basis 100%）自己折到第二行去。没有关联时跟以前长得一样。 */
+.sub{display:flex;gap:8px;align-items:flex-start;padding:5px 0;font-size:12.5px;flex-wrap:wrap}
 .sub input[type=checkbox]{width:15px;height:15px;accent-color:var(--series-1);margin:2px 0 0;flex:0 0 auto}
 .sub .grow{flex:1;min-width:0;word-break:break-word}
 .sub.done .grow{text-decoration:line-through;color:var(--muted)}
-/* 「↔ 同一件事」的选择器：一条行里 [勾选框][名字][和谁绑][删除]，
-   它只是选择器不是按钮，所以字号和 .tiny 按钮对齐就行；窄屏给它让位。 */
+/* 「↔ 同一件事」的选择器：它只是选择器不是按钮，所以字号和 .tiny 按钮对齐就行；
+   窄屏给它让位。 */
 .sub select.link{flex:0 1 auto;max-width:250px;padding:2px 4px;font-size:12px;
   color:var(--text-secondary);background:var(--surface-1);
   border:1px solid var(--border);border-radius:7px;cursor:pointer}
 .sub select.link:hover{border-color:var(--series-1)}
+/* 关联那一整条：挂在名字底下（左边缩进对齐输入框），
+   [已关联的每一条一个 chip（点一下解开）][＋ 关联…] 排一行，不够就折行。 */
+.lks{flex:1 1 100%;display:flex;flex-wrap:wrap;align-items:center;gap:6px;
+  margin-top:3px;padding-left:23px}
+.lks-h{font-size:11.5px;color:var(--text-secondary);flex:0 0 auto}
+/* chip 的配方和上面 .chip 一样（--text-secondary 压 --surface-1，7.7:1），只是小一号 */
+.lk{display:inline-flex;align-items:center;max-width:30ch;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;font-size:11.5px;padding:3px 8px;border-radius:7px;
+  background:var(--surface-1);border:1px solid var(--border);
+  color:var(--text-secondary);cursor:pointer}
+.lk:hover{background:var(--chip);border-color:var(--series-1)}
+.lks select.link{max-width:220px}
 
 /* 心情 */
 .moods{display:flex;gap:6px}
@@ -331,6 +356,14 @@ details[open] summary{margin-bottom:11px}
 .mo-d .de,
 .mo-d .dl{font-size:10.5px;font-weight:650;letter-spacing:-.01em;
   color:var(--text-secondary);line-height:1.25;white-space:nowrap}
+/* 「截」后面跟的那件事的标题（桌面端写出来，窄屏藏掉）。
+   省略号要生效，这一串必须是 flex + min-width:0 —— 光写 text-overflow 不够，
+   因为 flex 子项的默认 min-width:auto 会撑破容器、永远不触发省略。
+   ⚠️ .dt 不能自己写 color：一旦写成 --muted，它会盖掉上面那条 --text-secondary，
+      对比度掉到 3.50:1（浅色），而检测脚本读的是 .dl 的颜色、查不出来。 */
+.mo-d .dl{display:inline-flex;align-items:baseline;gap:3px;min-width:0;max-width:100%}
+.mo-d .dlc{flex:none}
+.mo-d .dt{overflow:hidden;text-overflow:ellipsis;min-width:0}
 .mo-d .dc{margin-top:auto;font-size:16px;font-weight:650;letter-spacing:-.02em}
 .mo-d.lv1{background:color-mix(in srgb, var(--series-1) 12%, var(--surface-1))}
 .mo-d.lv2{background:color-mix(in srgb, var(--series-1) 26%, var(--surface-1))}
@@ -428,6 +461,9 @@ details[open] summary{margin-bottom:11px}
   .mo-d .dc{font-size:13px}
   .mo-d .de,
   .mo-d .dl{font-size:9px}
+  /* 格宽只有 36~41px，标题写上去只会被省略成「交…」，占地方还没有信息量 ——
+     手机上只留「截」，要看是哪件事就长按/悬停（title 里写着全量清单）。 */
+  .mo-d .dt{display:none}
   .mo-d .drow{gap:3px}
   .mo-d .dm{font-size:10px;top:3px;right:4px}
   .ov-nm{flex-basis:40%}

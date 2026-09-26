@@ -572,12 +572,17 @@ ok($('cd-sub').textContent.includes('已经完成 1 件'), '已完成的不算�
 
 console.log('── 倒计时落到月历上：「截」标记 ──');
 const dlOf = (d) => { const k = find(cell(d), (n) => hasCls(n, 'dl')); return k ? k.textContent : ''; };
+/* 「截」那个字本身在 .dlc 里，标题在 .dt 里（窄屏 CSS 会把 .dt 藏掉）。
+   只对「截 / 截×2」这个标记做断言时用这个，别拿 .dl 的全文比 —— 会带上标题。 */
+const dlcOf = (d) => { const k = find(cell(d), (n) => hasCls(n, 'dlc')); return k ? k.textContent : ''; };
 const cellOfIso = (iso) => (iso.startsWith('2026-09') ? cell(Number(iso.slice(8))) : null);
 /* 三个截止日都按「今天」算，跨月就可能不在当前显示的 9 月里 ——
    那就不假造结果，明说跳过（和上面「今天」那段的做法一致） */
 if ([D2, DM5, DM9].every((s) => s.startsWith('2026-09'))) {
-  ok(dlOf(Number(D2.slice(8))) === '截', '还没完成的截止日那天，格子里标「截」');
-  ok(dlOf(Number(DM5.slice(8))) === '截', '过期未完成的也照样标出来（要能看见欠着的事）');
+  ok(dlcOf(Number(D2.slice(8))) === '截', '还没完成的截止日那天，格子里标「截」');
+  ok(dlOf(Number(D2.slice(8))).includes('交开题报告'),
+    '「截」后面直接写出是哪件事，不用悬停：' + dlOf(Number(D2.slice(8))));
+  ok(dlcOf(Number(DM5.slice(8))) === '截', '过期未完成的也照样标出来（要能看见欠着的事）');
   ok(dlOf(Number(DM9.slice(8))) === '',
     '已经完成的那条不再标「截」—— 那天只会以「完成」的身份出现');
   ok(cellOfIso(DM9).title.includes('完成目标：预约答辩教室'), '完成了就归到「完成目标」那一栏');
@@ -690,6 +695,77 @@ ok(!$('cd-cols').textContent.includes('临时·明天要交的'), '删完列表�
 DB.goals = DB.goals.filter((g) => !g.title.startsWith('临时·'));
 $('btn-refresh').fire('click'); await tick(); await tick();
 ok($('cd-cols').textContent.includes('交开题报告'), '收尾后回到 3 条基准数据');
+
+/* ── 倒计时：改一条 ──────────────────────────────────────────
+   她：「倒计时的内容提交后还可以编辑」。
+   要点：① 走 update 不是 insert（否则一改多一行）；
+        ② **只动标题/截止日/说明**，done / progress / target / period_start 一律不碰
+           —— 改个标题不该把完成状态和占位字段顺手重置掉；
+        ③ 有「取消」能退回新建态。 */
+console.log('── 倒计时：改一条 ──');
+const editRow = (t) => byCls($('cd-cols'), 'item').find((i) => i.textContent.includes(t));
+const eTgt = DB.goals.find((g) => g.title === '交实验数据');
+const eBefore = { id: eTgt.id, done: eTgt.done, progress: eTgt.progress,
+                  target: eTgt.target, period_start: eTgt.period_start };
+btns(editRow('交实验数据'), '改')[0].fire('click');
+ok($('cd-title').value === '交实验数据', '点「改」把标题填回上面那个表单：' + $('cd-title').value);
+ok($('cd-due').value === DM5, '截止日也填回去了：' + $('cd-due').value);
+ok($('cd-add').textContent === '保存修改', '按钮变成「保存修改」');
+ok($('cd-cancel').hidden === false, '同时冒出「取消」');
+
+$('cd-title').value = '交实验数据（改过）';
+$('cd-due').value = isoOff(9);
+$('cd-add').fire('click'); await tick(); await tick();
+const eAfter = DB.goals.find((g) => g.id === eBefore.id);
+ok(!!eAfter, '改完还是**原来那一行**，不是新增一行（id 没变）');
+ok(DB.goals.filter((g) => g.title === '交实验数据（改过）').length === 1, '库里只有一条改过的');
+ok(eAfter && eAfter.title === '交实验数据（改过）', '新标题写进去了');
+ok(eAfter && eAfter.due_date === isoOff(9), '新截止日写进去了：' + (eAfter && eAfter.due_date));
+ok(eAfter && eAfter.done === eBefore.done && eAfter.progress === eBefore.progress &&
+   eAfter.target === eBefore.target && eAfter.period_start === eBefore.period_start,
+   '完成状态和占位字段一个都没被顺手重置');
+ok($('cd-add').textContent === '加上', '存完自动退回「新建」状态');
+ok($('cd-cancel').hidden === true, '「取消」跟着收起来');
+ok($('cd-title').value === '', '输入框清空了');
+
+/* 取消 = 真的什么都没改。测法是接着按「加上」必须**新增**一条，
+   而不是偷偷去 update 刚才那条 —— 后者肉眼看不出来。 */
+btns(editRow('交实验数据（改过）'), '改')[0].fire('click');
+ok($('cd-add').textContent === '保存修改', '（再进一次编辑态）');
+$('cd-cancel').fire('click');
+ok($('cd-add').textContent === '加上', '点「取消」退回新建态');
+ok($('cd-title').value === '', '取消也把输入框清干净');
+$('cd-title').value = '临时·取消之后新加的';
+$('cd-due').value = isoOff(2);
+$('cd-add').fire('click'); await tick(); await tick();
+ok(DB.goals.some((g) => g.title === '临时·取消之后新加的'), '取消之后「加上」是新加一条（没被编辑态劫持）');
+ok(DB.goals.filter((g) => g.title === '交实验数据（改过）').length === 1, '刚才那条没被这次新增改掉');
+
+const nBeforeCd = DB.goals.length;
+$('cd-title').value = '   ';
+$('cd-add').fire('click'); await tick(); await tick();
+ok(DB.goals.length === nBeforeCd, '标题只有空格 → 不写库');
+ok($('toast').textContent.includes('先写要完成什么'), '并且说清楚要先写标题：' + $('toast').textContent);
+
+/* 正在改的那条被另一台设备删了 → 表单必须退回「新建」。
+   不兜这一下的话，「保存修改」会 update 到 0 行：页面看着像保存成功了，
+   其实什么都没发生 —— 这种「静默失败」最难查。 */
+const goner = DB.goals.find((g) => g.title === '临时·取消之后新加的');
+btns(editRow('临时·取消之后新加的'), '改')[0].fire('click');
+ok($('cd-add').textContent === '保存修改', '（第三次进编辑态）');
+DB.goals = DB.goals.filter((g) => g.id !== goner.id);   // 模拟被另一边删掉
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('cd-add').textContent === '加上', '正在改的那条没了 → 表单自己退回「新建」');
+ok($('cd-cancel').hidden === true, '「取消」也跟着收起');
+
+/* 收尾：清掉这一节临时造的行，并把改过的那条**按 id 还原**。
+   ⚠️ 改过的那条不能也起个「临时·」开头的名字 —— 会被上面那句清理规则一起删掉，
+      后面所有断言就都找不到「交实验数据」了（第一版就是这么错的）。 */
+DB.goals = DB.goals.filter((g) => !g.title.startsWith('临时·'));
+const eBack = DB.goals.find((g) => g.id === eBefore.id);
+if (eBack) { eBack.title = '交实验数据'; eBack.due_date = DM5; }
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('cd-cols').textContent.includes('交实验数据'), '收尾后「交实验数据」回来了');
 
 /* setup-7-countdown.sql 还没跑：goals 表里根本没有 due_date 这一列。
    要求：① 说清楚去跑哪个脚本，不甩 Postgres 原文；② 不静默失败；
@@ -1022,41 +1098,96 @@ await laneOff('线性代数应该这样学');
 ok(byCls($('done-picker'), 'chip').length === 8,
   '两组都收回默认样子（只剩大任务那组）：chip 8 个，实际 ' + byCls($('done-picker'), 'chip').length);
 
-console.log('── 更强的同步：把「大任务的一步」和「书的一章」绑成同一件事 ──');
+console.log('── 更强的同步：把「大任务的一步」和「书的一章」关联成同一件事（可以挂好几条）──');
 const html2 = fs.readFileSync(path.join(DIR, 'index.html'), 'utf8');
 const sql5 = fs.readFileSync(path.join(DIR, 'setup-5-link.sql'), 'utf8');
-ok(/add column if not exists link_id/.test(sql5), 'setup-5-link.sql 加的是 link_id 那一列（可重复执行）');
+const sql9 = fs.readFileSync(path.join(DIR, 'setup-9-links.sql'), 'utf8');
+ok(/add column if not exists link_id/.test(sql5),
+  'setup-5-link.sql 那一列还在（旧数据一行不删，页面继续读得到）');
+ok(/create table if not exists public\.links/.test(sql9), 'setup-9-links.sql 建的是 links 表（可重复执行）');
+ok(/create unique index if not exists links_pair_uniq/.test(sql9), '同一对只留一行（唯一索引挡重复）');
+ok(/a_kind in \('subtask', 'goal'\)/.test(sql9), '两端可以是 subtask（一步/一章）或 goal（30 天小目标）');
 ok(/同一件事/.test(html2), 'index.html 里把「↔」讲清楚了（大任务拆解 / 学习资源各一句）');
+ok(/可以关联好几条/.test(html2), '并且说明了能挂好几条');
 
 tabs[2].fire('click'); await tick();          // tasks
-const c1row = DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 1);
-const c2row = DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 2);
+const c1r = DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 1);
+const c2r = DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 2);
+const s2r = DB.subtasks.find((x) => x.id === 's2');
+const s3r = DB.subtasks.find((x) => x.id === 's3');
+const g1r = DB.goals.find((x) => x.id === 'g1');
+/* 这一整节会来回改这些行的状态，先记下原样，收尾时逐条还回去
+   （后面的用例依赖它们现在的样子） */
+const c1keep = { done: c1r.done, done_at: c1r.done_at };
+const c2keep = { done: c2r.done, done_at: c2r.done_at };
+const s2keep2 = { done: s2r.done, done_at: s2r.done_at };
+const s3keep2 = { done: s3r.done, done_at: s3r.done_at };
+const g1keep = { done: g1r.done, progress: g1r.progress, done_at: g1r.done_at };
+
 const rowS2 = subRowOf($('tasks-cols'), '第 5-8 讲');
 ok(!!rowS2, '找得到「第 5-8 讲」这一行');
 const selS2 = rowSel(rowS2);
-ok(!!selS2, '每一步右边多了「↔ 同一件事」的选择器');
-ok(selS2.textContent.includes('↔ 不绑'), '默认是「不绑」：' + selS2.textContent.slice(0, 24));
+ok(!!selS2, '每一步多了「↔ 同一件事」那一行');
+ok(selS2.textContent.includes('＋ 关联…'), '默认是「＋ 关联…」：' + selS2.textContent.slice(0, 24));
 ok(selS2.textContent.includes('线性代数应该这样学 · 第 2 章'), '对家是这本书的章节，列了出来');
-ok(!selS2.textContent.includes('习题课'), '不列自己的兄弟姐妹 —— 只能跨「大任务 ↔ 资源」绑');
+ok(selS2.textContent.includes('30 天小目标 · 背完 300 个单词'), '30 天小目标也能挂上来');
+ok(!selS2.textContent.includes('第 1-4 讲'), '不列自己的兄弟姐妹 —— 只能跨「大任务 ↔ 资源」挂');
 ok(!selS2.textContent.includes('考研政治'), '对方的资源不出现');
+ok(!selS2.textContent.includes('交开题报告'), '倒计时的目标不参与（它是 0/1 的截止日，没法拆解）');
+ok(byCls(rowS2, 'lk').length === 0, '还没关联时一个小方块都不显示');
 
-/* 绑之前两边状态故意不一样（s2 已完成、第 2 章没完成）→ 应该**问她一句**，不自己拉平 */
-const s2wasDone = DB.subtasks.find((x) => x.id === 's2').done;
-ok(s2wasDone === true && c2row.done === false, '绑之前两边状态确实不一样，正好用来测「问一句」');
+/* 关联之前两边状态故意不一样（s2 早就完成、第 2 章没有）→ 应该**问她一句**，不自己拉平 */
+ok(s2r.done === true && c2r.done === false, '关联之前两边状态确实不一样，正好用来测「问一句」');
 globalThis.confirm = () => false;             // 先答「不」
-await pickLink(rowS2, c2row.id);
-ok(DB.subtasks.find((x) => x.id === 's2').link_id === c2row.id &&
-   c2row.link_id === 's2', '两条互相指着 = 绑上了');
-ok(DB.subtasks.find((x) => x.id === 's2').done === true && c2row.done === false,
+await pickLink(rowS2, 'subtask:' + c2r.id);
+ok(DB.links.length === 1, 'links 表里只写了一行（不是两边各写一条），实际 ' + DB.links.length);
+const pair = DB.links[0];
+ok(new Set([pair.a_id, pair.b_id]).size === 2 &&
+   [pair.a_id, pair.b_id].includes('s2') && [pair.a_id, pair.b_id].includes(c2r.id),
+  '这一行两端指着这两条');
+ok(pair.a_kind + ':' + pair.a_id < pair.b_kind + ':' + pair.b_id,
+  '写之前先排了序 —— 正着点反着点都落在同一行上，唯一索引挡得住重复');
+ok(s2r.done === true && c2r.done === false,
   '她答「不」时，不替她把哪一边标成完成');
-ok($('toast').textContent.includes('绑好了'), '并且提示已经绑上：' + $('toast').textContent);
-globalThis.confirm = () => true;              // 后面的删除确认走真流程
+ok($('toast').textContent.includes('关联上了'), '并且提示已经关联上：' + $('toast').textContent);
 
-/* ── 核心：勾任意一边，另一边自动跟上 ──
-   先把两条都退回未完成：不然「对家完成了」可能只是它本来就完成着，
+/* ── 这次改动的重点：一条可以挂**好几条** ── */
+const rowS2b = subRowOf($('tasks-cols'), '第 5-8 讲');
+ok(byCls(rowS2b, 'lk').length === 1, '已经关联的那条显示成一个小方块');
+ok(byCls(rowS2b, 'lk')[0].textContent.includes('第 2 章'),
+  '方块上写着关联的是哪一条：' + byCls(rowS2b, 'lk')[0].textContent);
+ok(!rowSel(rowS2b).textContent.includes('第 2 章'), '已经挂上的那条不再出现在候选里');
+ok(rowSel(rowS2b).textContent.includes('第 3 章'), '但别的还能接着挂（多对多，不再「名花有主」）');
+/* 第 1 章早就完成了，s2 也完成着 —— 两边状态一样，这一条**不该**再问她 */
+let asked = 0;
+globalThis.confirm = () => { asked++; return false; };   // 这一圈里还有一条没完成 → 应该问一句
+await pickLink(rowS2b, 'subtask:' + c1r.id);
+ok(DB.links.length === 2, '挂上第二条了，两条并存（多对多，不再「名花有主」），实际 ' + DB.links.length);
+ok(asked === 1, '这一圈里状态不一致，所以问了一句');
+ok(c2r.done === false && s2r.done_at === s2keep2.done_at, '她答「不」就一条也不动');
+globalThis.confirm = () => true;
+
+const rowS2c = subRowOf($('tasks-cols'), '第 5-8 讲');
+ok(byCls(rowS2c, 'lk').length === 2, '两个小方块并排显示，可以挂好几条');
+ok(rowSel(rowS2c).textContent.includes('＋ 关联…') && !rowSel(rowS2c).textContent.includes('第 1 章'),
+  '两条挂过的不再出现在候选里');
+
+/* ── 多对多的关键一条：只排掉「挂给我的」，不能把「挂给别人的」也排掉 ──
+   第 2 章这会儿已经挂给「第 5-8 讲」了。多对多的意思正是「一章 = 两本书的那一节」
+   也可能同时等于**另一**步，所以它在别的行的候选里必须还在。
+   （只按文案断言会漏：那一条的表达在两边都能通过，得直接看 option 的 value。） */
+const optVals = (row) => (rowSel(row)
+  ? rowSel(row).children.filter((c) => c.tagName === 'OPTION').map((c) => c.value) : []);
+const selS3 = subRowOf($('tasks-cols'), '习题课');
+ok(!!selS3 && optVals(selS3).includes('subtask:' + c2r.id),
+  '已经挂给**别人**的那条，在别的行的候选里照旧列出来（不是「名花有主」）');
+
+/* ── 核心：勾任意一边，关联着的另外几条自动跟上 ──
+   先把三条都退回未完成：不然「跟上了」可能只是它本来就完成着，
    测出来的是空过（第一版就踩了这个坑，变异测试当场戳穿）。 */
-s2row.done = false; s2row.done_at = null;      // s2row 是上面「两组同时勾」那块定义的，同一个对象
-c2row.done = false; c2row.done_at = null;
+s2r.done = false; s2r.done_at = null;
+c1r.done = false; c1r.done_at = null;
+c2r.done = false; c2r.done_at = null;
 $('btn-refresh').fire('click'); await tick();
 
 tabs[4].fire('click'); await tick();          // res
@@ -1064,9 +1195,11 @@ const r1card = findAll($('res-cols'), (n) => hasCls(n, 'item'))
   .find((n) => n.textContent.includes('线性代数应该这样学'));
 const chRow2 = subRowOf(r1card, '第 2 章');
 ok(!!chRow2, '书的章节行也在（同一个 subRow 渲染的）');
-ok(!!rowSel(chRow2), '这一章右边也有那个「↔」');
+ok(!!rowSel(chRow2), '这一章也有那条「↔」');
+ok(byCls(chRow2, 'lk').length === 1 && byCls(chRow2, 'lk')[0].textContent.includes('第 5-8 讲'),
+  '从这一边也看得到那一步：' + byCls(chRow2, 'lk')[0].textContent);
 
-/* 日历上今天几件 —— 绑着的两条只能算一件 */
+/* 日历上今天几件 —— 关联着的三条只能算一件 */
 tabs[1].fire('click'); await tick();
 const dBefore = Number(dcOf(now.getDate()) || 0);
 tabs[4].fire('click'); await tick();
@@ -1076,13 +1209,15 @@ rowBox(subRowOf(findAll($('res-cols'), (n) => hasCls(n, 'item'))
   .fire('change', { target: { checked: true } });
 await tick(); await tick();
 
-ok(c2row.done === true, '勾了这一章，它自己完成');
-ok(s2row.done === true, '**大任务里对应的那一步跟着完成了**（勾一个另一个自动跟上）');
-ok(s2row.done_at === c2row.done_at, '两条用的是同一个时刻，不会被算成两天');
+ok(c2r.done === true, '勾了这一章，它自己完成');
+ok(s2r.done === true, '**大任务里对应的那一步跟着完成了**');
+ok(c1r.done === true, '**另外挂着的那一章也跟着完成了**（不是只联动一条）');
+ok(s2r.done_at === c2r.done_at && c1r.done_at === c2r.done_at,
+  '三条用的是同一个时刻，不会被算成三天');
 
 tabs[1].fire('click'); await tick();
 ok(Number(dcOf(now.getDate()) || 0) === dBefore + 1,
-  '日历上今天只多 1 件，不是 2 件（绑着的两条是同一件事）：' +
+  '日历上今天只多 1 件，不是 3 件（关联着的几条是同一件事）：' +
   dBefore + ' → ' + dcOf(now.getDate()));
 
 tabs[0].fire('click'); await tick();          // home
@@ -1092,57 +1227,126 @@ rowBox(subRowOf(findAll($('res-cols'), (n) => hasCls(n, 'item'))
   .find((n) => n.textContent.includes('线性代数应该这样学')), '第 2 章'))
   .fire('change', { target: { checked: false } });
 await tick(); await tick();
-ok(c2row.done === false && s2row.done === false, '取消勾选，两边一起退回未完成');
+ok(c2r.done === false && s2r.done === false && c1r.done === false,
+  '取消勾选，关联着的三条一起退回未完成');
 tabs[0].fire('click'); await tick();
 ok(($('feed').textContent.match(/完成章节|完成小任务/g) || []).length === feedN - 1,
-  '动态流里也只减 1 条，不是 2 条');
+  '动态流里也只减 1 条，不是 3 条');
+
+/* ── 再挂第三条：验证真能挂好几条，以及一圈状态本来就一致时不该弹确认框 ── */
+const c3r = DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 3);
+tabs[2].fire('click'); await tick();
+let asked2 = 0;
+globalThis.confirm = () => { asked2++; return true; };
+await pickLink(subRowOf($('tasks-cols'), '第 5-8 讲'), 'subtask:' + c3r.id);
+ok(DB.links.length === 3, '挂上第三条了，好几条并存，实际 ' + DB.links.length);
+ok(asked2 === 0, '这一圈此刻全都没完成、状态本来就一致 → 不弹确认框烦她');
+globalThis.confirm = () => true;
+ok(byCls(subRowOf($('tasks-cols'), '第 5-8 讲'), 'lk').length === 3, '三个小方块并排显示');
 
 /* ── 反方向：在「大任务拆解」里勾那一步，书那边跟着完成 ── */
 tabs[2].fire('click'); await tick();
 rowBox(subRowOf($('tasks-cols'), '第 5-8 讲')).fire('change', { target: { checked: true } });
 await tick(); await tick();
-ok(c2row.done === true, '在大任务那边勾，书的章节跟着完成（绑定是双向的）');
+ok(c1r.done === true && c2r.done === true, '在大任务那边勾，两章都跟着完成（关联是双向的）');
+ok(c3r.done === true, '隔着一跳的那条也跟上了 —— 按**整圈**传，不是只传一跳');
 
-/* ── 一对一：已经被占的对家，不再出现在别人的候选里 ── */
-const rowS3 = subRowOf($('tasks-cols'), '习题课');
-ok(!rowSel(rowS3).textContent.includes('第 2 章'), '第 2 章已经和第 5-8 讲绑了，不再出现在别的候选里');
-ok(rowSel(rowS3).textContent.includes('第 3 章'), '没被占的还能选');
+/* ── 30 天小目标也能挂上来（她原话：「下面的 30 天小目标依然可以关联上」）──
+   先把 g1 退回未完成，不然「它没被标成完成」测的是空过 ——
+   前面那段早就把它标成完成了（进度推到 300）。收尾时按 g1keep 还原。 */
+g1r.done = false; g1r.done_at = null; g1r.progress = 120;
+$('btn-refresh').fire('click'); await tick();
+tabs[1].fire('click'); await tick();          // 月度任务（30 天小目标折在最后）
+const goalRow = findAll($('goals-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('背完 300 个单词'));
+ok(!!goalRow, '找得到「背完 300 个单词」这个小目标');
+ok(!!rowSel(goalRow), '目标那一行也有「↔ 同一件事」');
+ok(rowSel(goalRow).textContent.includes('习题课'), '候选里是那几条小任务/章节');
+await pickLink(goalRow, 'subtask:s3');
+const gpair = DB.links.find((l) => l.a_id === 's3' || l.b_id === 's3');
+ok(!!gpair, '小目标和一条小任务关联上了');
+ok(gpair.a_kind === 'goal' || gpair.b_kind === 'goal', '这一端是 goal，另一端是 subtask');
 
-/* ── 解开 ── */
-await pickLink(rowS2, '');                    // 选「↔ 不绑」
-ok(DB.subtasks.find((x) => x.id === 's2').link_id == null && c2row.link_id == null,
-  '两边都松开了，不留单向指针');
-ok(c2row.done === true && DB.subtasks.find((x) => x.id === 's2').done === true,
-  '解开不会顺手改完成状态（各自保留当时的）');
+/* 关键：勾那一步**不会**顺手把这个 30 天目标标成完成 —— 它有自己的进度计数 */
+tabs[2].fire('click'); await tick();
+rowBox(subRowOf($('tasks-cols'), '习题课')).fire('change', { target: { checked: true } });
+await tick(); await tick();
+ok(s3r.done === true, '勾了「习题课」这一步');
+ok(g1r.done === false && g1r.progress === 120,
+  '关联着的 30 天目标**没有**被跟着标成完成，进度也没动（它自己算自己的）');
+
+/* ── 解开：点一下那个小方块 ── */
+tabs[1].fire('click'); await tick();
+const goalRow2 = findAll($('goals-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('背完 300 个单词'));
+ok(byCls(goalRow2, 'lk').length === 1, '目标那边显示着关联的那条');
+byCls(goalRow2, 'lk')[0].fire('click'); await tick(); await tick();
+ok(!DB.links.some((l) => l.a_id === 's3' || l.b_id === 's3'), '点一下就解开了（不用再去下拉里选「不绑」）');
 ok($('toast').textContent.includes('解开了'), '并且说一声：' + $('toast').textContent);
+ok(g1r.done === false && g1r.progress === 120, '解开也不会顺手改完成状态和进度');
 
-/* ── 删掉一条，对家的指针要跟着松 ── */
-await pickLink(rowS3, c2row.id);
-ok(DB.subtasks.find((x) => x.id === 's3').link_id === c2row.id, '习题课 ←→ 第 2 章 绑上了');
-const s3row2 = DB.subtasks.find((x) => x.id === 's3');
-const s3keep2 = { done: s3row2.done, done_at: s3row2.done_at };
+/* ── 旧的一对一那一列（setup-5-link.sql）：数据没删，照样读得到、照样能解 ── */
+s3r.link_id = c1r.id;
+c1r.link_id = 's3';
+$('btn-refresh').fire('click'); await tick();
+tabs[2].fire('click'); await tick();
+const rowS3 = subRowOf($('tasks-cols'), '习题课');
+ok(byCls(rowS3, 'lk').length === 1, '旧的一对一绑定被当成一条关联显示出来，一行都没丢');
+ok(byCls(rowS3, 'lk')[0].textContent.includes('第 1 章'),
+  '方块上写的是对家的名字：' + byCls(rowS3, 'lk')[0].textContent);
+/* 缺列时的降级：旧的那一套解绑要写 link_id，库里没这一列就得说清楚去跑哪个脚本 */
+failNext = 'column "link_id" of relation "subtasks" does not exist';
+byCls(rowS3, 'lk')[0].fire('click'); await tick(); await tick();
+ok($('toast').textContent.includes('setup-5-link.sql'),
+  '缺列时被翻译成「去跑哪个脚本」，不甩 Postgres 原文：' + $('toast').textContent);
+ok(s3r.link_id === c1r.id, '写失败了就老实保持原样，不会假装解开');
+ok(failNext === null, '（failNext 已消耗）');
+/* 再点一次（这次能写）→ 两边都松开 */
+const rowS3b = subRowOf($('tasks-cols'), '习题课');
+byCls(rowS3b, 'lk')[0].fire('click'); await tick(); await tick();
+ok(s3r.link_id == null && c1r.link_id == null,
+  '点掉旧的那条时，**两边**的 link_id 都清掉，不留单向指针');
+
+/* ── 删掉一条，挂着它的关联要一起清 ── */
+const nLinksBeforeDel = DB.links.length;
 tabs[4].fire('click'); await tick();
-const chRow3 = subRowOf(findAll($('res-cols'), (n) => hasCls(n, 'item'))
-  .find((n) => n.textContent.includes('线性代数应该这样学')), '第 2 章');
-btns(chRow3, '✕')[0].fire('click'); await tick(); await tick();
-ok(!DB.subtasks.some((x) => x.id === c2row.id), '第 2 章删掉了');
-ok(DB.subtasks.some((x) => x.id === 's3'), '（对家「习题课」还在，没被连坐）');
-ok(s3row2.link_id == null, '对家（习题课）的指针也被松开，不会指着一个不存在的东西');
+btns(subRowOf(findAll($('res-cols'), (n) => hasCls(n, 'item'))
+  .find((n) => n.textContent.includes('线性代数应该这样学')), '第 2 章'), '✕')[0].fire('click');
+await tick(); await tick();
+ok(!DB.subtasks.some((x) => x.id === c2r.id), '第 2 章删掉了');
+ok(DB.links.length === nLinksBeforeDel - 1,
+  '挂着它的关联也一起清了，不留指着空气的行：' + nLinksBeforeDel + ' → ' + DB.links.length);
+ok(DB.links.every((l) => l.a_id !== c2r.id && l.b_id !== c2r.id),
+  'links 里再也找不到它');
 
-/* 收尾：把 s3 还回去、所有绑定清干净，后面的用例照旧 */
-Object.assign(s3row2, s3keep2);
-DB.subtasks.push(c2row);
+/* 收尾：把第 2 章放回去、状态逐条还原、关联清空，后面的用例照旧 */
+DB.subtasks.push(c2r);
+Object.assign(c1r, c1keep);
+Object.assign(c2r, c2keep);
+Object.assign(s2r, s2keep2);
+Object.assign(s3r, s3keep2);
+Object.assign(g1r, g1keep);
+DB.links.length = 0;
 DB.subtasks.forEach((x) => { x.link_id = null; });
 $('btn-refresh').fire('click'); await tick();
 
-console.log('── 降级：还没跑 setup-5-link.sql ──');
+console.log('── 降级：还没跑 setup-9-links.sql ──');
+/* 表不存在时：整页照常（旧的一对一那套还在用），只是挂不了第二条，
+   而且明说去跑哪个脚本，不把 Postgres 原文甩给她。 */
+failSelect = 'links';
+$('btn-refresh').fire('click'); await tick();
 tabs[2].fire('click'); await tick();
-failNext = 'column "link_id" of relation "subtasks" does not exist';
-await pickLink(subRowOf($('tasks-cols'), '第 1-4 讲'),
-  DB.subtasks.find((x) => x.resource_id === 'r1' && x.seq === 3).id);
-ok($('toast').textContent.includes('setup-5-link.sql'),
-  '缺列时被翻译成「去跑哪个脚本」，不甩 Postgres 原文：' + $('toast').textContent);
-ok(failNext === null, '（failNext 已消耗）');
+const rowDeg = subRowOf($('tasks-cols'), '第 5-8 讲');
+ok(!!rowDeg && !!rowSel(rowDeg), '没有 links 表时页面照常画得出来，那一行还在');
+failNext = "Could not find the table 'public.links' in the schema cache";
+await pickLink(rowDeg, 'subtask:' + c1r.id);
+ok($('toast').textContent.includes('setup-9-links.sql'),
+  '写失败被翻译成「去跑哪个脚本」：' + $('toast').textContent);
+ok($('toast').textContent.includes('只能一条对一条'),
+  '并告诉她在那之前只能一条对一条');
+ok(!DB.links.length, '（一行都没写进去）');
+failSelect = null;
+$('btn-refresh').fire('click'); await tick();
 
 console.log('── 降级：还没跑 setup-4-chapters.sql ──');
 /* 没跑 SQL 时最真实的症状：资源根本分不了章 → 资源模式只能提示去分章，按钮点不动，
@@ -1562,6 +1766,103 @@ ok(!$('import-meta').textContent.includes('setup-6-exams.sql'), '表在的时候
 console.log('── 导出 ──');
 $('btn-export').fire('click'); await tick();
 ok(true, '导出没抛错');
+
+/* ── 校训：登录页和主页各显示一句，且是同一句 ────────────────
+   两条路径都要测：
+   ① 表在 → 显示库里的，能加 / 能改 / 能删；
+   ② 表不在 → 退回内置的 39 条，登录页照样有话说（不能白着一行），只是改不了。 */
+console.log('── 校训：登录页与主页随机显示一句 ──');
+/* 主页那句是页头里的，任何页签下都在；管理卡片在「导出 / 导入」页，
+   所以动列表之前要先切到那一页 —— 不然 $('mt-list') 是空的，
+   看起来像「列表没渲染」，其实是那一页没打开过。 */
+const mottoOf = () => $('home-motto').textContent;
+const goData = async () => { tabs.find((t) => t.dataset.tab === 'data').fire('click'); await tick(); };
+await goData();
+ok(mottoOf() === $('lg-motto').textContent && mottoOf().length > 0,
+  '登录页和主页显示的是**同一条**（各抽各的会让同一屏里两句话打架）：' + mottoOf());
+ok(!$('mt-warn').textContent.includes('setup-8-mottos.sql'),
+  '表在的时候不啰嗦脚本的事：' + ($('mt-warn').textContent || '(空)'));
+
+DB.mottos = [
+  { id: 'm1', school: '复旦大学', text: '博学而笃志，切问而近思', sort: 1, created_at: '2026-09-01T00:00:00Z' },
+  { id: 'm2', school: '清华大学', text: '自强不息，厚德载物', sort: 2, created_at: '2026-09-01T00:00:00Z' },
+];
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok(/博学而笃志|自强不息/.test(mottoOf()),
+  '刷新后显示的是**库里**那两条之一，不是内置兜底：' + mottoOf());
+ok(mottoOf().includes('」 · '), '格式是「校训」 · 学校：' + mottoOf());
+
+/* 「换一条看看」要真的换（两条的池子里至少换一次能换到另一条）。
+   只看一次可能抽到同一条，所以给它几次机会 —— 但断言的是「换过」。 */
+let changed = false;
+for (let i = 0; i < 12 && !changed; i++) {
+  const was = mottoOf();
+  $('mt-shuffle').fire('click');
+  if (mottoOf() !== was) changed = true;
+}
+ok(changed, '点「换一条看看」会换一条');
+
+/* 加上一条 */
+const nMt = DB.mottos.length;
+$('mt-text').value = '临时·测试校训';
+$('mt-school').value = '测试大学';
+$('mt-add').fire('click'); await tick(); await tick();
+ok(DB.mottos.length === nMt + 1, '「加上」真的写库了');
+const mtNew = DB.mottos.find((m) => m.text === '临时·测试校训');
+ok(mtNew && mtNew.school === '测试大学', '学校名也写进去了');
+ok($('mt-text').value === '' && $('mt-school').value === '', '加完把两个输入框清空');
+ok(mottoOf().includes('测试校训'),
+  '刚加完就把它显示出来 —— 否则「加上了」之后顶上还是别人，像没存进去：' + mottoOf());
+
+/* 空校训要拦下来 */
+$('mt-text').value = '   ';
+const nMt2 = DB.mottos.length;
+$('mt-add').fire('click'); await tick(); await tick();
+ok(DB.mottos.length === nMt2, '校训空着不写库');
+ok($('toast').textContent.includes('先写一句校训'), '并且说清楚要先写内容：' + $('toast').textContent);
+$('mt-text').value = '';
+
+/* 改一条：走 update，不能多出一行 */
+const mtRow = byCls($('mt-list'), 'item').find((r) => r.textContent.includes('测试校训'));
+btns(mtRow, '改')[0].fire('click');
+ok(byCls($('mt-list'), 'item').some((r) => findAll(r, (n) => n.tagName === 'INPUT').length === 2),
+  '点「改」把这一行换成两个输入框（原文 + 学校）');
+const mtEditBox = byCls($('mt-list'), 'item').find((r) => findAll(r, (n) => n.tagName === 'INPUT').length === 2);
+const mtIns = findAll(mtEditBox, (n) => n.tagName === 'INPUT');
+mtIns[0].value = '临时·改过的校训';
+mtIns[1].value = '改过的大学';
+btns(mtEditBox, '保存')[0].fire('click'); await tick(); await tick();
+ok(DB.mottos.filter((m) => m.text === '临时·改过的校训').length === 1, '改完只出一条（走的是 update）');
+ok(DB.mottos.length === nMt2, '总条数没变 —— 没多出一行');
+ok(DB.mottos.some((m) => m.school === '改过的大学'), '学校名也改了');
+ok($('mt-text').value === '', '（改的那次没顺手往上面的「加上」表单里灌东西）');
+
+/* 删除 */
+const mtDel = byCls($('mt-list'), 'item').find((r) => r.textContent.includes('改过的校训'));
+btns(mtDel, '删除')[0].fire('click'); await tick(); await tick();
+ok(!DB.mottos.some((m) => m.text === '临时·改过的校训'), '「删除」真的删掉了');
+
+/* 表不在 → 退回内置 39 条，照样有校训看 */
+DB.mottos = [];
+failSelect = 'mottos';
+$('btn-refresh').fire('click'); await tick(); await tick();
+const fb = mottoOf();
+ok(fb.length > 0, '表没建时登录页也不是空着 —— 用内置那份兜底：' + fb);
+ok(/^(「.*」)( · .+)?$/.test(fb), '兜底那条也是同样的格式：' + fb);
+ok($('mt-warn').textContent.includes('setup-8-mottos.sql'),
+  '并且明说去跑哪个脚本：' + $('mt-warn').textContent);
+ok(!$('mt-list').textContent.includes('复旦'),
+  '表不在时不画可点的列表（画了也存不下，点了只会报错）');
+ok(mottoOf() === $('lg-motto').textContent, '兜底状态下两处也还是同一条');
+
+/* 放掉钩子，恢复 */
+DB.mottos = [
+  { id: 'm1', school: '复旦大学', text: '博学而笃志，切问而近思', sort: 1, created_at: '2026-09-01T00:00:00Z' },
+  { id: 'm2', school: '清华大学', text: '自强不息，厚德载物', sort: 2, created_at: '2026-09-01T00:00:00Z' },
+];
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('mt-warn').textContent === '', '表回来后提示条自己收起来');
+ok(/博学而笃志|自强不息/.test(mottoOf()), '显示切回库里那两条');
 
 console.log('── CSS：[hidden] 必须是硬开关 ──');
 /* 回归测试：登录成功后登录页没消失、直接盖住主页。

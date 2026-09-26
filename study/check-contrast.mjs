@@ -105,6 +105,14 @@ const VARS = {
 const TEXT_ON = [
   ['.chip.done .ct', '--surface-1', 'chip 上已勾掉的章节名'],
   ['.chip .cn', '--surface-1', 'chip 右边的进度计数'],
+  /* 校训两处底色不一样：登录页在卡片上（--surface-1），页头在页面底色上（--page）。
+     --page 比 --surface-1 略深一档，所以两种都要单独算，别只算一种就放过。 */
+  ['.motto', '--surface-1', '登录页那句校训'],
+  ['.motto', '--page', '页头那句校训（压在页面底色上）'],
+  /* 「↔ 同一件事」那一行。小标题没有自己的底色，压在小任务所在的卡片底（--page）上；
+     每条已关联的 chip 自己铺了一层 --surface-1，按那一层算。 */
+  ['.lks-h', '--page', '「↔ 同一件事」那行的小标题'],
+  ['.lk', '--surface-1', '已关联的那条 chip'],
 ];
 const noComment = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
 /* 取某个选择器块里 color:var(--x) 的 token 名 */

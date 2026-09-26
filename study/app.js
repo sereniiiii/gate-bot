@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════
-   学习协作 · app.js
+   乐观者永远前行 · app.js
 
    数据存在 Supabase（Postgres）。安全靠服务端的 RLS，不靠这个文件。
    所以这里的两个常量可以公开：anon key 本来就设计成写在网页里的。
@@ -36,6 +36,53 @@
   ];
   const EXAM_KIND_LABEL = { school: '学校考试', paper: '自己做的试卷' };
   const GOAL_PERIOD_DAYS = 30;
+
+  /* 39 所 985 高校的校训，登录页和主页随机挑一句显示。
+     这是**兜底清单**：setup-8-mottos.sql 跑过之后，页面读的是库里的 mottos 表
+     （可以在「导出 / 导入」页改），这份就只在表还没建时用。
+     ⚠️ 改这里等于只改了兜底 —— 库建好之后要改的是库。两份内容本来一致，
+        想同步的话照着 setup-8-mottos.sql 里的种子数据抄。 */
+  const MWORDS = [
+    ['清华大学', '自强不息，厚德载物'],
+    ['北京大学', '爱国、进步、民主、科学'],
+    ['中国人民大学', '实事求是'],
+    ['北京航空航天大学', '德才兼备，知行合一'],
+    ['北京理工大学', '德以明理，学以精工'],
+    ['中国农业大学', '解民生之多艰，育天下之英才'],
+    ['北京师范大学', '学为人师，行为世范'],
+    ['中央民族大学', '美美与共，知行合一'],
+    ['南开大学', '允公允能，日新月异'],
+    ['天津大学', '实事求是'],
+    ['大连理工大学', '团结、进取、求实、创新'],
+    ['东北大学', '自强不息，知行合一'],
+    ['吉林大学', '求实创新，励志图强'],
+    ['哈尔滨工业大学', '规格严格，功夫到家'],
+    ['复旦大学', '博学而笃志，切问而近思'],
+    ['同济大学', '同舟共济'],
+    ['上海交通大学', '饮水思源，爱国荣校'],
+    ['华东师范大学', '求实创造，为人师表'],
+    ['南京大学', '诚朴雄伟，励学敦行'],
+    ['东南大学', '止于至善'],
+    ['浙江大学', '求是创新'],
+    ['中国科学技术大学', '红专并进，理实交融'],
+    ['厦门大学', '自强不息，止于至善'],
+    ['山东大学', '学无止境，气有浩然'],
+    ['中国海洋大学', '海纳百川，取则行远'],
+    ['武汉大学', '自强、弘毅、求是、拓新'],
+    ['华中科技大学', '明德厚学，求是创新'],
+    ['中南大学', '知行合一，经世致用'],
+    ['湖南大学', '实事求是，敢为人先'],
+    ['国防科技大学', '厚德博学，强军兴国'],
+    ['中山大学', '博学、审问、慎思、明辨、笃行'],
+    ['华南理工大学', '博学慎思，明辨笃行'],
+    ['四川大学', '海纳百川，有容乃大'],
+    ['电子科技大学', '求实求真，大气大为'],
+    ['重庆大学', '耐劳苦、尚俭朴、勤学业、爱国家'],
+    ['西安交通大学', '精勤求学，敦笃励志，果毅力行，忠恕任事'],
+    ['西北工业大学', '公诚勇毅'],
+    ['西北农林科技大学', '诚朴勇毅'],
+    ['兰州大学', '自强不息，独树一帜'],
+  ];
 
   /* ── 状态 ──────────────────────────────────────────────────── */
   const S = {
@@ -75,6 +122,20 @@
     /* 倒计时。条目就是 goals 表里 due_date 非空的行（不新开表，见 setup-7-countdown.sql）。
        cdNoCol = 库里还没有 due_date 那一列时置位（setup-7 跑之前）。 */
     cdNoCol: false,
+    cdEdit: null,         // 正在改的那条倒计时的 id，null = 上面那个表单是「新建」
+    /* 校训。两个人的共同装饰，不按 owner 分（见 setup-8-mottos.sql）。
+       mtNoTable = 表还没建，这时用内置的 MWORDS 兜底显示，只是改不了。
+       mtEdit    正在改的那一条的 id，null = 没在改 */
+    mottos: [],
+    mtNoTable: false,
+    mtEdit: null,
+    mtNow: null,          // 此刻显示的那一条（登录页与主页共用同一条）
+    /* 「同一件事」的关联，多对多，存在 links 表里（见 setup-9-links.sql）。
+       旧的 subtasks.link_id（一对一）**没删也没搬**，读的时候当作一条额外关联
+       折算进来（peersOf 里那一段）—— 一行数据都没丢。
+       lkNoTable = links 表还没建，这时退回「只能一对一」的旧样子。 */
+    links: [],
+    lkNoTable: false,
   };
 
   /* ── 小工具 ────────────────────────────────────────────────── */
@@ -126,7 +187,7 @@
       subs: [], goals: [], pushes: [], exams: [], res: [], due: [], log: null,
     }));
     for (const x of S.subtasks) {
-      if (isTwinEcho(x)) continue;        // 绑着的两条是同一件事，只算一次
+      if (isLinkEcho(x)) continue;        // 关联着的几条是同一件事，只算一次
       const k = isoDate(x.done_at);
       if (!k) continue;
       if (x.done) slot(k).subs.push(x);   // 完成
@@ -175,7 +236,18 @@
 
   /* 格子右下角的截止日小标记：只有「还没完成、截止日在这天」的倒计时才标。
      不写还剩几天 —— 格子里放不下，而且那天本身就是答案。 */
-  const dueMark = (list) => (!list.length ? '' : list.length > 1 ? '截×' + list.length : '截');
+  /* 「截」= 那天有还没完成的倒计时任务到期。
+     桌面端把**第一件事的标题也写出来** —— 不然格子里只有一个「截」字，
+     她得逐格悬停才知道是哪件事。同一天两件以上只写件数（剩下的靠悬停看全）；
+     窄屏（≤560px）一行放不下，CSS 里把 .dt 藏掉，只留「截」。 */
+  function dueMarkEl(list) {
+    if (!list.length) return null;
+    const head = list.length > 1 ? '截×' + list.length : '截';
+    return h('span', { class: 'dl' },
+      h('span', { class: 'dlc', text: head }),
+      list.length === 1 ? h('span', { class: 'dt', text: (list[0] && list[0].title) || '(无标题)' }) : null
+    );
+  }
 
   /* 判断一个值是不是 DOM 节点。真假 DOM 都能认：真节点有 nodeType，
      假 DOM（smoke-test）的 El 两个都有。 */
@@ -255,19 +327,18 @@
   };
   const parentIsRes = (x) => !x.task_id && !!x.resource_id;
 
-  /* ── 「同一件事的两个说法」────────────────────────────────
-     两条 subtask 互相指着 = 一本书的一章 就是 大任务里的那一步。
-     在任意一边勾完成，另一边跟着变（同步写在 setDone 里，一处覆盖所有入口）。
-     绑是**双向**的，所以谁先被勾都一样。
-     注意：库里没有 link_id 这一列时，所有行都读不到它 → 就是「没绑过」，
-     页面照常（loadAll 用的是 select('*')，缺列不会报错、不会白屏）。 */
+  /* ── 「同一件事」的关联（多对多）────────────────────────────
+     一本书的一章，可能就是大任务里的那一步；一步也可能同时是两本书的某几章；
+     30 天小目标也可能是大任务里的某几步。所以是一张**多对多**的表 links
+     （见 setup-9-links.sql），一行 = 一对。
+
+     旧的 subtasks.link_id（一对一那一套，setup-5-link.sql）**数据一行没删**：
+     下面 peersOf() 把它折算成一条额外的关联一起返回，标 legacy=true。
+     要不要留着由她决定 —— 界面上点掉那条 chip 才会真的清空它。
+
+     库里没有 link_id 这一列时所有行都读不到它 → 就是「没绑过」；没有 links
+     表时 S.links 是空的 → 退回旧的一对一那套，页面照常，不会白屏。 */
   const linkedTo = (x) => (x && x.link_id ? S.subtasks.find((s) => s.id === x.link_id) || null : null);
-  /* 绑着的两条在库里是两行，但**是同一件事** —— 日历和动态流里只算一次，
-     否则绑一对就把那天的件数灌一倍。id 小的那条算数（uuid 比大小任意但稳定）。 */
-  const isTwinEcho = (x) => {
-    const t = linkedTo(x);
-    return !!(t && t.done && x.done && String(x.id) > String(t.id));
-  };
   /* 「属于哪儿」的人话说法，动态流和列表都用它 */
   const parentLabel = (x) => {
     const n = parentName(x);
@@ -275,61 +346,212 @@
     return (parentIsRes(x) ? '资源 · ' : '大任务 · ') + n;
   };
 
-  /* 能跟这一条绑成「同一件事」的候选：大任务的步骤 ↔ 资源的章节，一对一。
-     已经绑给别人的不再列出来 —— 否则会出现三条互指、勾一下动两条不相干的。
-     连不到任何东西时返回空数组，界面上那个入口就不出现。 */
-  function linkChoices(sub) {
-    const isCh = parentIsRes(sub);
+  /* 关联的两端只有这两种：大任务的一步 / 资源的一章（都是 subtasks），
+     以及 30 天小目标（goals 里 due_date 为空的那种）。
+     倒计时（goals 里 due_date 非空）不参与 —— 它是 0/1 的截止日，没有拆解的余地。 */
+  const kindOfGoal = (g) => (g && g.due_date ? null : 'goal');
+  const itemOf = (kind, id) => (kind === 'goal'
+    ? S.goals.find((g) => g.id === id) || null
+    : S.subtasks.find((s) => s.id === id) || null);
+  const lkKey = (kind, id) => kind + ':' + id;
+  /* 显示用的一句话：「资源 · 线性代数应该这样学 · 第 2 章」/「30 天小目标 · 背完 300 个单词」 */
+  const itemLabel = (kind, id) => {
+    const it = itemOf(kind, id);
+    if (!it) return '（已删除）';
+    return kind === 'goal' ? '30 天小目标 · ' + (it.title || '未填写')
+                           : parentLabel(it) + ' · ' + (it.title || '未填写');
+  };
+
+  /* 这一条挂着的所有对家。两个方向都查 —— 万一有行是反着存的也照样读得到。
+     找不到对家的行（对家被删了、又没删干净）直接跳过：宁可不显示，
+     也不要显示成「关联到空气」。旧的一对一那列折算成一条 legacy 关联。 */
+  function peersOf(kind, id) {
     const out = [];
-    const push = (pname, rows) => {
-      for (const r of rows) {
-        if (r.id === sub.id) continue;
-        if (r.link_id && r.link_id !== sub.id) continue;     // 名花有主
-        out.push({ id: r.id, label: pname + ' · ' + (r.title || '未填写') });
+    for (const r of S.links) {
+      const p = r.a_kind === kind && r.a_id === id ? { kind: r.b_kind, id: r.b_id }
+              : r.b_kind === kind && r.b_id === id ? { kind: r.a_kind, id: r.a_id }
+              : null;
+      if (!p || !itemOf(p.kind, p.id)) continue;
+      if (out.some((o) => o.kind === p.kind && o.id === p.id)) continue;
+      out.push({ kind: p.kind, id: p.id, linkId: r.id, legacy: false });
+    }
+    if (kind === 'subtask') {
+      const t = linkedTo(itemOf('subtask', id));
+      if (t && !out.some((o) => o.kind === 'subtask' && o.id === t.id)) {
+        out.push({ kind: 'subtask', id: t.id, linkId: null, legacy: true });
       }
-    };
-    if (isCh) for (const t of S.tasks.filter(isMine)) push(t.title || '大任务', subsOfTask(t.id));
-    else      for (const r of S.resources.filter(isMine)) push(r.name || '资源', subsOfRes(r.id));
+    }
+    return out;
+  }
+  const peersOfSub = (x) => (x ? peersOf('subtask', x.id) : []);
+
+  /* 一圈「同一件事」：从这一条出发，把它挂着的、那些挂着的都收进来。
+     为什么要整圈而不是只走一跳：A 挂着 B、B 又挂着 C 时，三条都是同一件事。
+     只传一跳的话，勾 C 会把 A 落下 —— 留下「A 和 C 都等于 B，却互相不一致」
+     的怪状态，日历上的件数也会跟着飘。圈再大也有限（都是她自己的几十条），
+     收完就停，不会无限转。返回 [{kind, item}]。 */
+  function linkedGroup(kind, id) {
+    const seen = new Set([lkKey(kind, id)]);
+    const out = [];
+    const q = [{ kind: kind, id: id }];
+    while (q.length) {
+      const cur = q.shift();
+      for (const p of peersOf(cur.kind, cur.id)) {
+        const k = lkKey(p.kind, p.id);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const it = itemOf(p.kind, p.id);
+        if (!it) continue;
+        out.push({ kind: p.kind, item: it });
+        q.push({ kind: p.kind, id: p.id });
+      }
+    }
     return out;
   }
 
-  /* 绑 / 解绑。往新对家身上绑之前，先把两边各自旧的那条松开，免得留下单向指针。
-     绑完如果两边的完成状态不一样，**问一句**再决定要不要拉平 ——
-     她明确说过别替她宣布完成，所以这里绝不自己动手。 */
-  async function setLink(sub, targetId) {
-    const tgt = targetId ? S.subtasks.find((s) => s.id === targetId) : null;
-    if (targetId && !tgt) return { error: { message: '要绑的那一条已经不在了' } };
-    if (tgt && tgt.id === sub.id) return { error: { message: '不能和自己绑' } };
+  /* 关联着的几条在库里是**好几行**，但在日历和动态流里是同一件事，只算一次。
+     否则勾一步就把那天的件数灌成好几件。
+     判据：这一圈里已经完成的、id 比我小的只要有一条，就由它代表，我这边算回声。
+     不看 done_at —— 她可能分开勾，那样时间戳就不一样了；id 序虽然任意但稳定。 */
+  const isLinkEcho = (x) => {
+    if (!x || !x.done) return false;
+    return linkedGroup('subtask', x.id).some((g) =>
+      g.kind === 'subtask' && g.item.done && String(g.item.id) < String(x.id));
+  };
 
-    const old = linkedTo(sub);
-    const tOld = tgt ? linkedTo(tgt) : null;
-    const jobs = [];
-    if (old && (!tgt || old.id !== tgt.id)) jobs.push(old);
-    if (tOld && tOld.id !== sub.id) jobs.push(tOld);
-
-    /* 先改内存再写库：下面那个 confirm 之后要调 setDone()，而 setDone 靠
-       linkedTo() 找对家 —— 内存不先更新的话它会往**旧**对家身上带。 */
-    sub.link_id = tgt ? tgt.id : null;
-    tgt && (tgt.link_id = sub.id);
-    for (const o of jobs) o.link_id = null;
-
-    const res = await Promise.all([
-      ...jobs.map((o) => sb.from('subtasks').update({ link_id: null }).eq('id', o.id)),
-      sb.from('subtasks').update({ link_id: sub.link_id }).eq('id', sub.id),
-      ...(tgt ? [sb.from('subtasks').update({ link_id: sub.id }).eq('id', tgt.id)] : []),
-    ]);
-    const bad = res.find((r) => r.error);
-    if (bad) return bad;
-
-    if (tgt && !!tgt.done !== !!sub.done) {
-      const a = (sub.title || '未填写') + (sub.done ? '（已完成）' : '（还没完成）');
-      const b = (tgt.title || '未填写') + (tgt.done ? '（已完成）' : '（还没完成）');
-      if (confirm('绑好了。但两边现在不一样：' + a + '、' + b + '。\n\n' +
-                  '要不要把两条都算完成？（不点确定就保持原样，以后勾哪边都会带着另一边）')) {
-        await setDone('subtasks', sub.done ? sub.id : tgt.id, true);
-      }
+  /* 能跟这一条关联的候选。跟以前那条一对一的规则比，只有一处变化：
+     **不再把「已经挂给别人的」排除掉** —— 多对多就是要能挂多条。
+     自己、已经关联过的、对方的东西都不列。没有候选时返回空数组，
+     界面上那个「＋ 关联…」就不出现。 */
+  function linkChoices(kind, row) {
+    const have = new Set(peersOf(kind, row.id).map((p) => lkKey(p.kind, p.id)));
+    const out = [];
+    const add = (k, r) => {
+      if (!r || !isMine(r)) return;
+      if (k === kind && r.id === row.id) return;
+      const key = lkKey(k, r.id);
+      if (have.has(key)) return;
+      out.push({ kind: k, id: r.id, key: key, label: itemLabel(k, r.id) });
+    };
+    if (kind === 'subtask') {
+      /* 大任务的一步 ↔ 资源的章节：**跨父项**才算（自己同一父项下的兄弟姐妹不列，
+         那本来就是同一个大任务里的两步，不是「同一件事的两种说法」）。 */
+      const xs = parentIsRes(row) ? S.subtasks.filter((s) => s.task_id)
+                                  : S.subtasks.filter((s) => s.resource_id);
+      xs.forEach((s) => add('subtask', s));
+      /* 30 天小目标也能挂上（倒计时那些不算，kindOfGoal 返回 null 就跳过） */
+      S.goals.filter((g) => kindOfGoal(g)).forEach((g) => add('goal', g));
+    } else {
+      S.subtasks.forEach((s) => add('subtask', s));
     }
-    return { error: null };
+    return out;
+  }
+
+  /* 关联一条。写之前先把这一对**排好序**：(a_kind,a_id) <= (b_kind,b_id)。
+     这样正着点反着点都落在同一行上，唯一索引挡得住重复。
+     links 表还没建时明确说去跑哪个脚本（schemaWarn）。 */
+  async function addLink(kind, row, target) {
+    const A = lkKey(kind, row.id), B = lkKey(target.kind, target.id);
+    const [a_kind, a_id, b_kind, b_id] = A <= B
+      ? [kind, row.id, target.kind, target.id]
+      : [target.kind, target.id, kind, row.id];
+    const r = await sb.from('links').insert({ owner: S.me.id, a_kind, a_id, b_kind, b_id });
+    if (r.error) { toast('没关联上：' + schemaWarn(r.error), true); return; }
+    await refresh();
+    toast('关联上了：' + itemLabel(kind, row.id) + ' ↔ ' + itemLabel(target.kind, target.id));
+
+    /* 关联完这一圈的完成状态可能不一样 → **问一句**，绝不自己替她宣布完成。
+       只算 subtask（这一步自己和同一圈里的章/步）：30 天小目标有自己的进度计数，
+       勾一步就把它标成完成太越权，所以它只是被挂上、状态不动。 */
+    const others = linkedGroup(kind, row.id)
+      .filter((g) => g.kind === 'subtask')
+      .map((g) => g.item);
+    const group = (kind === 'subtask' ? [row] : []).concat(others)
+      .filter((s, i, a) => a.findIndex((t) => t.id === s.id) === i);   // 去重
+    const todo = group.filter((s) => !s.done);
+    /* 一圈里全都没完成、或全都完成了 = 本来就对齐，不用问 */
+    if (!others.length || !todo.length || todo.length === group.length) return;
+    const st = (s) => (s.title || '未填写') + (s.done ? '（已完成）' : '（还没完成）');
+    if (!confirm('关联好了。但这几条现在不一样：' + group.map(st).join('、') + '。\n\n'
+      + '要不要把这几条都算完成？（不点确定就保持原样，以后勾哪边都会带着其它几条）')) return;
+    const stamp = new Date().toISOString();
+    await Promise.all(todo.map((s) =>
+      sb.from('subtasks').update({ done: true, done_at: stamp }).eq('id', s.id)));
+    await refresh();
+  }
+
+  /* 解开一条。legacy 那种（旧的一对一列）要把**两边**的 link_id 都清掉，
+     不留单向指针；新的走 links 表，删那一行就行。 */
+  async function dropLink(kind, rowId, peer) {
+    const jobs = [];
+    if (peer.legacy) {
+      jobs.push(sb.from('subtasks').update({ link_id: null }).eq('id', rowId));
+      const other = itemOf('subtask', peer.id);
+      if (other && other.link_id === rowId) {
+        jobs.push(sb.from('subtasks').update({ link_id: null }).eq('id', other.id));
+      }
+    } else {
+      jobs.push(sb.from('links').delete().eq('id', peer.linkId));
+    }
+    const res = await Promise.all(jobs);
+    const bad = res.find((r) => r.error);
+    if (bad) { toast('没解开：' + schemaWarn(bad.error), true); return; }
+    await refresh();
+    toast('解开了，两边各自算各自的');
+  }
+
+  /* 删掉一条东西（小任务 / 章节 / 目标）时，把挂着它的关联一起清掉。
+     没有外键约束，所以这几句得前端来（见 setup-9-links.sql 的已知限制）。
+     按 a_id / b_id 各删一次：id 是 uuid，两种 kind 之间不会撞。 */
+  function dropLinksOf(id) {
+    if (S.lkNoTable) return Promise.resolve();
+    return Promise.all([
+      sb.from('links').delete().eq('a_id', id),
+      sb.from('links').delete().eq('b_id', id),
+    ]).then(() => {}, () => {});
+  }
+
+  /* 一行底下那条「↔ 同一件事」：已经挂着的每条一个 chip（点一下解开），
+     右边一个「＋ 关联…」的下拉。没有候选、也没挂着东西时整条不出现。 */
+  function linkBar(kind, row) {
+    const peers = peersOf(kind, row.id);
+    const choices = linkChoices(kind, row);
+    if (!peers.length && !choices.length) return null;
+    const box = h('div', { class: 'lks' },
+      h('span', { class: 'lks-h', text: '↔ 同一件事' }));
+    for (const p of peers) {
+      box.appendChild(h('span', {
+        class: 'lk',
+        title: '点一下解开：' + itemLabel(p.kind, p.id)
+          + (p.legacy ? '（这是旧的一对一绑定，点掉就清了）' : ''),
+        text: itemLabel(p.kind, p.id),
+        onclick: () => dropLink(kind, row.id, p),
+      }));
+    }
+    if (choices.length) {
+      box.appendChild(h('select', {
+        class: 'tiny link',
+        title: '再关联一条。可以挂好几条：一步 = 两本书的那几章，或者 = 某个 30 天小目标。'
+             + '同一圈的会一起算完成',
+        onchange: async (e) => {
+          const v = e.target.value;
+          e.target.value = '';                 // 选完就弹回「＋ 关联…」，方便接着挂下一条
+          if (!v) return;
+          /* 值是 'kind:uuid'。形状不对（老的浏览器缓存、别人拼的）就直接不理，
+             否则会拿半截字符串当 id 往库里写一行垃圾。 */
+          const i = v.indexOf(':');
+          const k = v.slice(0, i), id = v.slice(i + 1);
+          if (i < 0 || (k !== 'subtask' && k !== 'goal') || !itemOf(k, id)) {
+            toast('这一条已经不在了，刷新一下再关联', true);
+            return;
+          }
+          await addLink(kind, row, { kind: k, id: id });
+        },
+      }, [h('option', { value: '', text: '＋ 关联…', selected: true })].concat(
+        choices.map((c) => h('option', { value: c.key, text: '↔ ' + c.label }))
+      )));
+    }
+    return box;
   }
 
   /* 头像：有图用图，没图就用自己的名字首字兜底（不是默认灰头像，两个人颜色可区分） */
@@ -394,6 +616,13 @@
        一行目标都没有时判断不了 —— 那就等真去写的时候报错再说（schemaWarn）。 */
     S.cdNoCol = S.goals.length > 0 && !S.goals.some((g) => 'due_date' in g);
     await loadExams();          // 单独一条，失败不影响上面任何一张表
+    await loadMottos();         // 同上：校训表没建也不能连累谁
+    await loadLinks();          // 同上：关联表没建就退回旧的一对一
+    /* 池子换成库里的那份之后要重画一次 —— showApp() 里那次抽签发生在
+       loadAll 之前，抽的是兜底清单；不在这儿补一刀的话，
+       库里明明有校训，页面却一直显示内置那条。
+       pickMotto() 在「池子里还有当前这条」时不会换，所以反复刷也稳定。 */
+    pickMotto();
   }
 
   /* 考试成绩**不能塞进上面那个 Promise.all** —— 那个数组里任何一条报错，
@@ -410,6 +639,76 @@
     S.exNoTable = false;
     S.exams = r.data || [];
     return true;
+  }
+
+  /* 校训也是**单独一条**，同理不能进 loadAll 那个 Promise.all。
+     表没建时退回内置的 MWORDS —— 登录页照样有校训可看，只是改不了。
+     注意 `??` 不是 `||`：库里真的空表时也要老实显示空（让管理卡片去提示加一条），
+     不能因为读到 [] 就假装没读到、把兜底那 39 条又贴回去。 */
+  async function loadMottos() {
+    const r = await sb.from('mottos').select('*').order('sort', { ascending: true });
+    if (r.error) {
+      S.mtNoTable = true;
+      S.mottos = [];
+      return false;
+    }
+    S.mtNoTable = false;
+    S.mottos = r.data || [];
+    return true;
+  }
+
+  /* 关联表（多对多）也是单独一条，理由同上：setup-9-links.sql 没跑过时
+     links 表不存在，不能让整页跟着读不出来。
+     没建表时 lkNoTable 置位 → 页面退回旧的「一对一」那套（link_id 那一列），
+     一行数据都不丢；只是挂不了第二条，并且明说去跑哪个脚本。 */
+  async function loadLinks() {
+    const r = await sb.from('links').select('*');
+    if (r.error) {
+      S.lkNoTable = true;
+      S.links = [];
+      return false;
+    }
+    S.lkNoTable = false;
+    S.links = r.data || [];
+    return true;
+  }
+
+  /* 显示用的那一份：库里有就用库里的，没有就用兜底清单。
+     两个地方（登录页、主页）显示的是**同一条** —— 每次渲染抽一次，
+     不各抽各的，否则一个小页面里两句话对不上，看着像出了 bug。 */
+  function mottoPool() {
+    if (S.mottos.length) {
+      return S.mottos.map((m) => ({ id: m.id, school: m.school || '', text: m.text || '' }))
+                     .filter((m) => m.text);
+    }
+    return MWORDS.map((p) => ({ id: '', school: p[0], text: p[1] }));
+  }
+
+  /* 一条校训的显示格式：「博学而笃志，切问而近思」 · 复旦大学
+     学校名可以空着（她只想加一句话也行），那就只显示引号里那句。 */
+  const mottoText = (m) => '「' + m.text + '」' + (m.school ? ' · ' + m.school : '');
+
+  /* 抽一条来显示。**不是每次渲染都重抽** —— renderCurrent() 每改一个字段都会被调，
+     每次重抽的话页面上的校训会跟着她点哪儿乱跳，像出了 bug。
+     只在三种情况下换：① 第一次（还没抽过）；② 池子变了（兜底 → 库里的，
+       且库里没有当前这条）；③ 她明确点了「换一条」。 */
+  function pickMotto(force) {
+    const pool = mottoPool();
+    if (!pool.length) {
+      S.mtNow = null;
+    } else if (force || !S.mtNow || !pool.some((m) => m.text === S.mtNow.text && m.school === S.mtNow.school)) {
+      S.mtNow = pool[Math.floor(Math.random() * pool.length)];
+    }
+    paintMotto();
+  }
+
+  /* 登录页和主页显示的是**同一条**，一次刷两处 —— 各抽各的会让同一屏里两句话打架 */
+  function paintMotto() {
+    const txt = S.mtNow ? mottoText(S.mtNow) : '';
+    const a = $('lg-motto');
+    const b = $('home-motto');
+    if (a) a.textContent = txt;
+    if (b) b.textContent = txt;
   }
 
   async function refresh() {
@@ -456,6 +755,15 @@
     if (/exams/i.test(m) && /(schema cache|does not exist|relation|not find)/i.test(m)) {
       return '库里还没有考试成绩这张表。去 Supabase 后台跑一次 study/setup-6-exams.sql 再回来。';
     }
+    if (/mottos/i.test(m) && /(schema cache|does not exist|relation|not find)/i.test(m)) {
+      return '库里还没有校训这张表。去 Supabase 后台跑一次 study/setup-8-mottos.sql 再回来。';
+    }
+    /* links 表整个不存在时 PostgREST 说的是 "Could not find the table 'public.links'
+       in the schema cache" —— 翻译成去跑哪个脚本 */
+    if (/links/i.test(m) && /(schema cache|does not exist|relation|not find)/i.test(m)) {
+      return '库里还没有「同一件事」这张关联表。去 Supabase 后台跑一次 study/setup-9-links.sql，'
+           + '在那之前只能一条对一条地绑。';
+    }
     return m;
   }
 
@@ -487,12 +795,25 @@
       return r;
     }).then((r) => {
       if (r.error || table !== 'subtasks') return r;
-      const twin = linkedTo(S.subtasks.find((s) => s.id === id));
-      if (!twin) return r;
-      /* 对家跟着一起变，done_at 用**同一个时刻** —— 两条是同一件事，
-         时间戳一样才不会被算成两天。对家写失败不推翻这次的结果（主那条已经成了），
-         刷新之后两边不一致她一眼能看见，再勾一下就好。 */
-      return sb.from('subtasks').update(full).eq('id', twin.id).then(() => r, () => r);
+      /* 同一圈里的 subtask 跟着一起变，done_at 用**同一个时刻** ——
+         它们是同一件事，时间戳一样才不会被算成两天。
+         传的是**整圈**（见 linkedGroup），不是只传一跳：只传一跳会留下
+         「两章都等于同一步，却互相不一致」的怪状态。
+         写完就停：这里直接写库、不调 setDone()，所以不会再触发下一轮传播。
+         30 天小目标不跟着变 —— 它有自己的进度计数，勾一步就宣布一个 30 天目标
+         完成太越权了，她自己去「月度任务」那一页标。
+         对家写失败不推翻这次的结果（主那条已经成了），刷新之后两边不一致
+         她一眼能看见，再勾一下就好。 */
+      const peers = linkedGroup('subtask', id)
+        .filter((g) => g.kind === 'subtask' && g.item.id !== id)
+        .map((g) => g.item);
+      if (!peers.length) return r;
+      /* 内存里也先跟上：调用方（勾选框）用的是 quiet()，成功时**不刷新**、
+         直接重画。不先改这里的话，勾了书的一章，大任务那一步的勾选框
+         要等下一次刷新才亮起来 —— 看着像没联动。 */
+      peers.forEach((y) => { y.done = done; y.done_at = full.done_at; });
+      return Promise.all(peers.map((y) => sb.from('subtasks').update(full).eq('id', y.id)))
+        .then(() => r, () => r);
     });
   }
 
@@ -597,6 +918,10 @@
       warn.textContent = '库里还没有「截止日」这一列（due_date）。去 Supabase 后台 → SQL Editor，'
         + '跑一次 study/setup-7-countdown.sql，再回来点「刷新」。在那之前这一页存不了倒计时。';
     }
+    /* 正在改的那条被别人删了（另一台设备 / 另一个页签）→ 表单退回「新建」。
+       不这样兜一下的话，按「保存修改」会 update 到 0 行，页面看着像保存成功了、
+       其实什么也没发生。 */
+    if (S.cdEdit && !S.goals.some((g) => g.id === S.cdEdit)) resetCdForm();
     if (!$('cd-due').value) $('cd-due').value = addDays(today(), 7);
 
     const all = S.goals.filter((g) => g.due_date);
@@ -646,6 +971,7 @@
               h('span', { text: '截止 ' + dateText(g.due_date) })
             ),
             mine ? h('div', { class: 'acts' },
+              h('button', { class: 'tiny', text: '改', onclick: () => editCountdown(g) }),
               h('button', {
                 class: 'tiny', text: '完成',
                 onclick: () => commit(
@@ -675,6 +1001,7 @@
                   (g.done_at ? '，' + isoDate(g.done_at) + ' 完成' : '') })
               ),
               mine ? h('div', { class: 'acts' },
+                h('button', { class: 'tiny', text: '改', onclick: () => editCountdown(g) }),
                 h('button', {
                   class: 'tiny', text: '取消完成',
                   onclick: () => commit(setDone('goals', g.id, false), '已取消完成标记'),
@@ -710,24 +1037,54 @@
 
   /* 加一条倒计时。goals 表的 period_start 是 not null，这儿拿今天占位 ——
      页面不显示它（那是 30 天小目标周期用的），只是为了满足约束。 */
+  function resetCdForm() {
+    S.cdEdit = null;
+    $('cd-title').value = '';
+    $('cd-detail').value = '';
+    $('cd-due').value = addDays(today(), 7);
+    $('cd-add').textContent = '加上';
+    $('cd-cancel').hidden = true;
+  }
+
+  /* 「改」是把这一条填回上面那个表单，**不是就地编辑** ——
+     跟「考试成绩」那一页同一套做法，两个页面手感一致（她已经在用那套了）。
+     `S.cdEdit` 为 null 就是新建，按钮文案两个状态。 */
+  function editCountdown(g) {
+    S.cdEdit = g.id;
+    $('cd-title').value  = g.title || '';
+    $('cd-due').value    = g.due_date || '';
+    $('cd-detail').value = g.detail || '';
+    $('cd-add').textContent = '保存修改';
+    $('cd-cancel').hidden = false;
+    $('cd-title').focus();
+  }
+
   async function addCountdown() {
     const title = $('cd-title').value.trim();
-    if (!title) { toast('先写要完成什么', true); return; }
+    if (!title) { toast('先写要完成什么', true); $('cd-title').focus(); return; }
     const due = $('cd-due').value;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) { toast('选一个截止日', true); return; }
-    const { error } = await sb.from('goals').insert({
-      owner: S.me.id, title: title, detail: $('cd-detail').value.trim(),
-      due_date: due, period_start: today(), target: 1, progress: 0, done: false,
-    });
-    if (error) {
-      if (/due_date/i.test(error.message)) S.cdNoCol = true;   // 下次刷新前就知道列没建
-      toast(schemaWarn(error), true);
+    const detail = $('cd-detail').value.trim();
+
+    const editing = S.cdEdit;
+    /* 改的时候只动这三个字段，**不碰 period_start / target / progress / done**：
+       那些是占位和完成状态，改个标题不该顺手把它们重置掉。
+       owner 也不写 —— update 的 with check 要求 owner 还是我，本来就是我自己的行。 */
+    const r = editing
+      ? await sb.from('goals').update({ title: title, detail: detail, due_date: due }).eq('id', editing)
+      : await sb.from('goals').insert({
+          owner: S.me.id, title: title, detail: detail,
+          due_date: due, period_start: today(), target: 1, progress: 0, done: false,
+        });
+
+    if (r.error) {
+      if (/due_date/i.test(r.error.message)) S.cdNoCol = true;   // 下次刷新前就知道列没建
+      toast(schemaWarn(r.error), true);
       renderCountdown();
       return;
     }
-    $('cd-title').value = '';
-    $('cd-detail').value = '';
-    toast('加上了，' + dateText(due) + '截止');
+    resetCdForm();
+    toast(editing ? '改好了' : '加上了，' + dateText(due) + '截止');
     await refresh();
   }
 
@@ -758,6 +1115,10 @@
               h('span', { text: '进度 ' + g.progress + ' / ' + g.target }),
               h('span', { text: periodTxt + '（到 ' + end + '）' })
             ),
+            /* ↔ 这个目标就是大任务里的某几步 / 书里的某几章。
+               关联只做「看得出是一件事」，**不会**因为勾了一步就把 30 天目标
+               标成完成 —— 它有自己的进度计数（见 setDone 里那段注释）。 */
+            mine ? linkBar('goal', g) : null,
             mine ? h('div', { class: 'acts' },
               h('button', { class: 'tiny', text: '−1', onclick: () => bumpGoal(g, -1) }),
               h('button', { class: 'tiny', text: '+1', onclick: () => bumpGoal(g, 1) }),
@@ -859,7 +1220,7 @@
       }
 
       const mark = e ? examMark(e.exams) : '';
-      const dMark = e ? dueMark(e.due) : '';
+      const dMark = e ? dueMarkEl(e.due) : null;
       grid.appendChild(h('div', {
         class: 'mo-d' + (lv ? ' lv' + lv : '') + (key === t ? ' today' : ''),
         title: key + '\n' + (bits.length ? bits.join('\n') : '这天没有记录'),
@@ -867,7 +1228,7 @@
         h('span', { class: 'dn', text: String(day) }),
         mark || dMark ? h('span', { class: 'drow' },
           mark ? h('span', { class: 'de', text: mark }) : null,
-          dMark ? h('span', { class: 'dl', text: dMark }) : null
+          dMark
         ) : null,
         e && e.log ? h('span', { class: 'dm', text: MOODS[e.log.mood - 1] || '' }) : null,
         n ? h('span', { class: 'dc', text: String(n) }) : null
@@ -1140,40 +1501,18 @@
           await quiet(sb.from('subtasks').update({ title: v }).eq('id', sub.id));
         },
       }));
-      /* ↔ 跟对面的哪一条是同一件事。绑上之后勾任意一边，另一边跟着一起完成 ——
+      /* ↔ 跟哪几条是同一件事。挂上之后勾任意一边，另外那几条跟着一起完成 ——
          书那边的章节进度条和大任务这边的步骤进度条就一起动了。
-         候选为空（对面还没有任何一条）时这个入口根本不出现。 */
-      const choices = linkChoices(sub);
-      if (choices.length || sub.link_id) {
-        const linked = linkedTo(sub);
-        /* 「不绑」放最前面。对家被删掉时（linked 找不到）它还会剩在库里，
-           这条兜底把它列出来，省得下拉框显示不出当前到底绑没绑。 */
-        const list = [{ id: '', label: '不绑' }];
-        if (linked && !choices.some((c) => c.id === linked.id)) {
-          list.push({ id: linked.id, label: parentLabel(linked) + ' · ' + (linked.title || '未填写') });
-        }
-        list.push(...choices);
-        box.appendChild(h('select', {
-          class: 'tiny link',
-          title: '把这一条和对面的一条绑成「同一件事」：勾任意一边，另一边自动跟着完成',
-          onchange: async (e) => {
-            const v = e.target.value;
-            const { error } = await setLink(sub, v || null);
-            if (error) { toast('没绑上：' + schemaWarn(error), true); renderCurrent(); return; }
-            await refresh();
-            toast(v ? '绑好了：这两条以后一起算完成' : '解开了，两边各自算各自的');
-          },
-        }, list.map((o) => h('option', {
-          value: o.id,
-          text: '↔ ' + o.label,
-          selected: o.id === (sub.link_id || ''),
-        }))));
-      }
+         可以挂**好几条**（一步 = 两本书的那几章，或者 = 某个 30 天小目标）。
+         没有候选、也没挂着东西时整条不出现。 */
+      const lk = linkBar('subtask', sub);
+      if (lk) box.appendChild(lk);
       box.appendChild(h('button', {
         class: 'tiny danger', text: '✕',
         onclick: async () => {
           if (!confirm(isCh ? '删掉这一章？' : '删掉这个小任务？')) return;
-          /* 先松开对家，免得留下一根指着空气的指针 */
+          /* 先把挂着它的关联清掉，免得留下一堆指着空气的行 */
+          await dropLinksOf(sub.id);
           const twin = linkedTo(sub);
           if (twin) { twin.link_id = null; await quiet(sb.from('subtasks').update({ link_id: null }).eq('id', twin.id)); }
           await commit(sb.from('subtasks').delete().eq('id', sub.id));
@@ -1405,14 +1744,32 @@
        她之后去「大任务拆解」把这一步勾上，setDone(true) 会用真实完成时刻覆盖 done_at，
        这条记录就自动从「今天动过」变成「已完成」—— 一份数据两种读法，不会两处对不上。 */
     const rows = S.subtasks
-      .filter((x) => x.done_at && isoDate(x.done_at) === t && !isTwinEcho(x))
-      .map((x) => Object.assign({}, x, { __step: !x.done, __twin: linkedTo(x) }))
+      .filter((x) => x.done_at && isoDate(x.done_at) === t && !isLinkEcho(x))
+      .map((x) => Object.assign({}, x, { __step: !x.done, __peers: peersOfSub(x) }))
       .sort((a, b) => (a.__step === b.__step ? 0 : a.__step ? 1 : -1));   // 完成的排前面
     twoCols($('done-cols'), rows, (owner, list, mine) => {
       if (!list.length) return emptyNote(mine ? '今天还没记。上面记一笔。' : '对方今天还没记。');
       const wrap = h('div');
       for (const x of list.slice(0, 60)) {
         const step = x.__step;
+        /* 关联着的另外几条也标出来 —— 免得她看见书那边没反应。
+           挂了好几条时（一步 = 两本书的那几章）每条一个药丸，最多列三个，
+           再多折成「↔ 还有 N 条」，不然一行挤不下。 */
+        const peerPills = x.__peers.slice(0, 3).map((p) => {
+          const it = itemOf(p.kind, p.id);
+          const isRes = p.kind === 'goal' || (!!it && parentIsRes(it));
+          return h('span', {
+            class: 'pill' + (isRes ? ' res' : ''),
+            title: '这一条和它关联成了同一件事',
+            text: '↔ ' + itemLabel(p.kind, p.id),
+          });
+        });
+        if (x.__peers.length > 3) {
+          peerPills.push(h('span', {
+            class: 'pill', title: '还有几条也是同一件事',
+            text: '↔ 还有 ' + (x.__peers.length - 3) + ' 条',
+          }));
+        }
         wrap.appendChild(
           h('div', { class: 'item' + (step ? '' : ' done') },
             h('div', { class: 't' },
@@ -1422,10 +1779,7 @@
             ),
             h('div', { class: 'm' },
               h('span', { class: 'pill' + (parentIsRes(x) ? ' res' : ''), text: '→ ' + parentLabel(x) }),
-              /* 绑了「同一件事」的另一半，把那边也标出来 —— 免得她看见书那边没反应 */
-              x.__twin ? h('span', { class: 'pill' + (parentIsRes(x.__twin) ? ' res' : ''),
-                title: '这一条和那一半绑成了同一件事，勾哪边都一起算完成',
-                text: '↔ ' + parentLabel(x.__twin) }) : null,
+              peerPills,
               h('span', { text: relTime(x.done_at) })
             ),
             mine ? h('div', { class: 'acts' },
@@ -1522,10 +1876,10 @@
       : '今天推进了「' + (j.sub.title || '这一步') + '」');
     if (noteSaved) said.push('存下了你写的两句话');
     const hasStep = jobs.some((j) => j.kind === 'task');
-    const tied = jobs.filter((j) => linkedTo(j.sub)).length;
+    const tied = jobs.filter((j) => peersOfSub(j.sub).length).length;
     toast((jobs.length ? '记下了：' + said.join('，') + '。' : '存下了。') +
       (hasStep ? '大任务那一步还没算完成 —— 真做完了去「大任务拆解」勾上它。' : '') +
-      (tied ? '它绑着的另一半也跟着变了。' : '') +
+      (tied ? '它关联着的那几条也跟着变了。' : '') +
       (blocked.length ? '（' + blocked[0] + '）' : ''));
     S.noteTouched = false;   // 存过了，之后 refresh 再用库里的值对齐
     await refresh();
@@ -2081,9 +2435,11 @@
       backend: {
         supabase_url: SUPABASE_URL,
         supabase_key: SUPABASE_KEY,
-        tables: ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources', 'exams'],
+        tables: ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources',
+                 'exams', 'mottos', 'links'],
         schema_sql: 'study/setup.sql + setup-3-feed.sql + setup-4-chapters.sql + setup-5-link.sql'
-                  + ' + setup-6-exams.sql + setup-7-countdown.sql（都可重复执行）',
+                  + ' + setup-6-exams.sql + setup-7-countdown.sql + setup-8-mottos.sql'
+                  + ' + setup-9-links.sql（都可重复执行）',
       },
       me: S.me ? { id: S.me.id, email: S.me.email, display_name: nameOf(S.me.id) } : null,
       counts: {
@@ -2092,11 +2448,13 @@
         exams: S.exams.length,
         // 倒计时不是独立的表，是 goals 里 due_date 非空的那部分，这里单独给个数便于对账
         countdown: S.goals.filter((g) => g.due_date).length,
+        mottos: S.mottos.length,
+        links: S.links.length,
       },
       data: {
         profiles: S.profileList, goals: S.goals, tasks: S.tasks,
         subtasks: S.subtasks, daily_logs: S.daily, resources: S.resources,
-        exams: S.exams,
+        exams: S.exams, mottos: S.mottos, links: S.links,
       },
     };
   }
@@ -2107,7 +2465,97 @@
       '倒计时 ' + nCd + ' · 目标 ' + S.goals.length + ' · 大任务 ' + S.tasks.length +
       ' · 小任务 ' + S.subtasks.length +
       ' · 日记 ' + S.daily.length + ' · 资源 ' + S.resources.length +
-      ' · 考试 ' + S.exams.length;
+      ' · 考试 ' + S.exams.length +
+      ' · 关联 ' + S.links.length;
+    renderMottoAdmin();
+  }
+
+  /* ── 校训管理（「导出 / 导入」页最下面那一块）──────────────────
+     这张表**没有 owner**，两个人共用一份清单 —— 所以这里不按人分栏，
+     也不用 twoCols。谁都能加、都能改、都能删（就两个人，刻意的）。 */
+  function renderMottoAdmin() {
+    $('mt-warn').textContent = S.mtNoTable
+      ? '库里还没有这张表 —— 去 Supabase 后台跑一次 study/setup-8-mottos.sql。'
+        + '在那之前显示的是内置的 39 条，加不了也改不了。'
+      : '';
+
+    $('mt-now').textContent = S.mtNow ? '现在显示的是：' + mottoText(S.mtNow) : '';
+
+    const box = $('mt-list');
+    clear(box);
+    if (S.mtNoTable) return;         // 表都没有，列表点了也存不下，不画
+    if (!S.mottos.length) {
+      box.appendChild(emptyNote('库里一条校训都没有，现在顶上显示的是**内置的 39 条**。'
+        + '在上面加一条自己的，它就会顶掉内置那份。'));
+      return;
+    }
+
+    for (const m of S.mottos) {
+      if (S.mtEdit === m.id) { box.appendChild(mottoEditRow(m)); continue; }
+      box.appendChild(h('div', { class: 'item' },
+        h('div', { class: 't' },
+          h('span', { class: 'grow', text: m.text }),
+          h('span', { class: 'pill', text: m.school || '没写出处' })
+        ),
+        h('div', { class: 'acts' },
+          h('button', {
+            class: 'tiny', text: '改',
+            onclick: () => { S.mtEdit = m.id; renderMottoAdmin(); },
+          }),
+          h('button', {
+            class: 'tiny danger', text: '删除',
+            onclick: async () => {
+              if (!confirm('删掉这条校训？\n\n' + m.text)) return;
+              if (S.mtNow && S.mtNow.text === m.text) S.mtNow = null;  // 删的正好是显示的那条，下次重抽
+              await commit(sb.from('mottos').delete().eq('id', m.id), '删掉了');
+            },
+          })
+        )
+      ));
+    }
+  }
+
+  /* 就地编辑一行。走 update 不走 insert —— insert 会多出一条。 */
+  function mottoEditRow(m) {
+    const t  = h('input', { type: 'text', class: 'grow', value: m.text || '', placeholder: '校训原文' });
+    const sc = h('input', { type: 'text', value: m.school || '', placeholder: '哪所学校（可留空）',
+                            style: { maxWidth: '150px' } });
+    return h('div', { class: 'item' },
+      h('div', { class: 't' },
+        t,
+        h('button', {
+          class: 'tiny primary', text: '保存',
+          onclick: async () => {
+            const text = t.value.trim();
+            if (!text) { toast('校训不能是空的', true); return; }
+            S.mtEdit = null;
+            if (S.mtNow && S.mtNow.id === m.id) S.mtNow = null;   // 显示的那条被改了，重新抽
+            await commit(sb.from('mottos').update({ text: text, school: sc.value.trim() }).eq('id', m.id), '改好了');
+          },
+        }),
+        h('button', { class: 'tiny', text: '取消', onclick: () => { S.mtEdit = null; renderMottoAdmin(); } })
+      ),
+      h('div', { class: 'm' }, sc)
+    );
+  }
+
+  async function addMotto() {
+    const text = $('mt-text').value.trim();
+    if (!text) { toast('先写一句校训', true); $('mt-text').focus(); return; }
+    const school = $('mt-school').value.trim();
+    const btn = $('mt-add');
+    btn.disabled = true;
+    const r = await sb.from('mottos').insert({ text: text, school: school });
+    btn.disabled = false;
+    if (r.error) { toast(schemaWarn(r.error), true); return; }
+    $('mt-text').value = '';
+    $('mt-school').value = '';
+    /* 刚加完就把这一条显示出来 —— 否则「加上了」之后页面顶上还是别人，
+       她会以为没存进去。（去「导出 / 导入」页改校训，看的却不是自己刚加的那条，很怪。） */
+    S.mtNow = { id: '', school: school, text: text };
+    paintMotto();
+    toast('加上了');
+    await refresh();
   }
 
   function doExport() {
@@ -2170,6 +2618,9 @@
   /* ── 删除（统一确认）───────────────────────────────────────── */
   async function removeRow(table, id, what) {
     if (!confirm('确定删除' + what + '？删了不可恢复。')) return;
+    /* 挂着它的关联要一起清掉，否则 links 里会留下指着空气的行。
+       （id 是 uuid，别的表不会有同号的，所以这里不用管 table 是哪张） */
+    await dropLinksOf(id);
     await commit(sb.from(table).delete().eq('id', id), '已删除');
   }
 
@@ -2192,7 +2643,7 @@
     }
     for (const s of S.subtasks) {
       if (!s.done) continue;
-      if (isTwinEcho(s)) continue;        // 绑着的两条是同一件事，动态流里只出现一次
+      if (isLinkEcho(s)) continue;        // 关联着的几条是同一件事，动态流里只出现一次
       ev.push({
         owner: s.owner, at: s.done_at || null, kind: 'done',
         text: parentIsRes(s) ? '完成章节 ' : '完成小任务 ',
@@ -2401,6 +2852,7 @@
     });
 
     $('cd-add').addEventListener('click', addCountdown);
+    $('cd-cancel').addEventListener('click', () => { resetCdForm(); toast('没改，表单已清空'); });
 
     $('g-add').addEventListener('click', async () => {
       const title = $('g-title').value.trim();
@@ -2522,31 +2974,53 @@
       e.target.value = '';
     });
 
+    $('mt-add').addEventListener('click', addMotto);
+    $('mt-shuffle').addEventListener('click', () => { pickMotto(true); renderMottoAdmin(); });
+
     $('btn-refresh').addEventListener('click', refresh);
     $('btn-logout').addEventListener('click', () => sb.auth.signOut());
   }
 
   /* ── 实时订阅 ──────────────────────────────────────────────── */
-  let rtChannel = null;
+  /* **一张表一条频道**。以前是九张表挤在一条频道上，只要有一张订不上
+     （表不存在，或者表存在但没进 realtime 发布），Supabase 会给整条频道回错误 ——
+     结果是一张表出问题，另外八张跟着一起不实时。
+     2026-09-26 发现 exams 就一直没进发布（setup.sql 里的表名单是写死的），
+     那颗小药丸大概一直是「未连上实时」。拆开之后谁也不连累谁。
+     代价是频道多了几条 —— 两个人、这个量级，无所谓。 */
+  let rtChannels = [];
+  let rtStatus = {};      // 表名 -> 连上没有，只用来写药丸上那句话
   function subscribeRealtime() {
     const pill = $('conn-pill');
     // 退出再登录会再进这里一次；同名的旧频道必须先撤掉，否则 SDK 会报重名
-    if (rtChannel) { sb.removeChannel(rtChannel); rtChannel = null; }
-    let ch = sb.channel('study-collab');
+    rtChannels.forEach((c) => sb.removeChannel(c));
+    rtChannels = [];
+    rtStatus = {};
+
     const tables = ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources'];
-    /* exams 表还没建的时候先不订它 —— 订阅一个不存在的表会让整条频道跟着报错，
-       那会连累另外六张表的实时同步。她已经跑过 setup-6-exams.sql 才有这一条。
-       （刚跑完 SQL 那一次要刷新页面，订阅才会补上 exams。） */
+    /* 新加的表还没跑 SQL 时先不订它（表都不存在，订了必错）：
+       exams 见 setup-6，mottos 见 setup-8，links 见 setup-9。
+       刚跑完 SQL 那一次要刷新页面，订阅才会补上。 */
     if (!S.exNoTable) tables.push('exams');
-    for (const t of tables) {
-      ch = ch.on('postgres_changes', { event: '*', schema: 'public', table: t }, () => onRealtime(t));
-    }
-    rtChannel = ch;
-    ch.subscribe((status) => {
-      const ok = status === 'SUBSCRIBED';
-      pill.textContent = ok ? '已连接 · 实时同步' : '未连上实时（手动刷新仍可用）';
+    if (!S.mtNoTable) tables.push('mottos');
+    if (!S.lkNoTable) tables.push('links');
+
+    const paint = () => {
+      const n = tables.filter((t) => rtStatus[t]).length;
+      const ok = n === tables.length;
+      pill.textContent = ok ? '已连接 · 实时同步'
+                          : n ? '部分同步（' + n + '/' + tables.length + ' 张表，手动刷新仍可用）'
+                              : '未连上实时（手动刷新仍可用）';
       pill.className = 'pill' + (ok ? ' ok' : '');
-    });
+    };
+    paint();
+
+    for (const t of tables) {
+      const ch = sb.channel('study-' + t)
+        .on('postgres_changes', { event: '*', schema: 'public', table: t }, () => onRealtime(t))
+        .subscribe((status) => { rtStatus[t] = status === 'SUBSCRIBED'; paint(); });
+      rtChannels.push(ch);
+    }
   }
 
   /* ── 头像 ──────────────────────────────────────────────────── */
@@ -2638,6 +3112,7 @@
     $('view-login').hidden = true;
     $('view-app').hidden = false;
     $('whoami').textContent = (user.email || '') + ' · 已登录';
+    pickMotto();   // 库里那份读到之后，池子换了一茬，这里会跟着换成库里的
     if (!$('g-start').value) $('g-start').value = today();
     if (!$('d-date').value)  $('d-date').value  = today();
     paintMeAvatar();
@@ -2657,6 +3132,7 @@
 
   async function boot() {
     $('view-login').hidden = false;   // 先给登录页，避免白屏
+    pickMotto();                      // 还没登录时用内置那份兜底，别让登录页空着一行
 
     if (!window.supabase || typeof window.supabase.createClient !== 'function') {
       $('lg-err').textContent = '客户端库没加载出来（supabase.js）。检查网络后刷新。';
