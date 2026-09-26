@@ -382,6 +382,14 @@ details[open] summary{margin-bottom:11px}
 .pill.res::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;
   background:var(--series-3);margin-right:5px;vertical-align:1px}
 
+/* 考试成绩：分数靠右、数字等宽。分数本身**不上色** —— 高低是她自己的事，
+   这里只负责把数字排整齐（上色会变成一种评价，也不是这套配色的用途）。 */
+.exscore{flex:0 0 auto;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.exscore b{font-size:17px;font-weight:700;letter-spacing:-.02em}
+.exscore .fs{font-size:11.5px;font-weight:550;color:var(--muted)}
+.exscore .pc{display:block;font-size:11.5px;font-weight:600;color:var(--text-secondary)}
+.exscore.none{font-size:11.5px;font-weight:550;color:var(--muted);align-self:center}
+
 /* 折叠区（心情与困难退到页签底部） */
 .fold{margin-bottom:16px}
 .fold-body{padding-top:4px}

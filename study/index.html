@@ -58,6 +58,7 @@
     <button class="tab" data-tab="tasks">大任务拆解</button>
     <button class="tab" data-tab="daily">今日完成情况</button>
     <button class="tab" data-tab="res">学习资源</button>
+    <button class="tab" data-tab="exams">考试成绩</button>
     <button class="tab" data-tab="data">导出 / 导入</button>
   </nav>
 
@@ -256,6 +257,51 @@
     </div>
 
     <div class="cols" id="res-cols"></div>
+  </section>
+
+  <!-- ── 考试成绩 ── -->
+  <section class="pane" id="pane-exams" hidden>
+    <div class="card">
+      <h2>记一场考试</h2>
+      <p class="hint" style="margin-top:0" id="ex-lead">…</p>
+      <div class="row" style="margin-top:12px">
+        <div><label class="f" for="ex-date">日期</label>
+          <input type="date" id="ex-date"></div>
+        <div style="flex:2;min-width:160px"><label class="f" for="ex-name">考试名称</label>
+          <input type="text" id="ex-name" placeholder="例如：期中数学"></div>
+        <div><label class="f" for="ex-subject">科目</label>
+          <input type="text" id="ex-subject" list="ex-subject-list" placeholder="数学 / 英语…">
+          <datalist id="ex-subject-list"></datalist></div>
+        <div><label class="f" for="ex-kind">哪一类</label>
+          <select id="ex-kind">
+            <option value="school">学校考试</option>
+            <option value="paper">自己做的试卷</option>
+          </select></div>
+        <div style="max-width:104px"><label class="f" for="ex-score">得分</label>
+          <input type="number" id="ex-score" step="0.5" placeholder="可留空"></div>
+        <div style="max-width:104px"><label class="f" for="ex-full">满分</label>
+          <input type="number" id="ex-full" step="0.5" placeholder="可留空"></div>
+        <button class="primary" id="ex-add">记下这一场</button>
+        <button id="ex-cancel" hidden>取消</button>
+      </div>
+      <div class="field" style="margin-top:10px">
+        <label class="f" for="ex-note">备注（可选）</label>
+        <input type="text" id="ex-note" placeholder="哪道题栽了 / 下次注意什么">
+      </div>
+      <p class="hint" id="ex-warn" hidden></p>
+    </div>
+
+    <div class="card">
+      <h2>考过的试</h2>
+      <p class="sub" id="ex-sub">…</p>
+      <div class="row tight" style="margin-bottom:12px">
+        <label class="f" style="margin:0">范围</label>
+        <div id="ex-scope" class="row tight" style="gap:6px"></div>
+        <label class="f" style="margin:0 0 0 12px">科目</label>
+        <div id="ex-subj" class="row tight" style="gap:6px"></div>
+      </div>
+      <div class="cols" id="ex-cols"></div>
+    </div>
   </section>
 
   <!-- ── 导出 / 导入 ── -->

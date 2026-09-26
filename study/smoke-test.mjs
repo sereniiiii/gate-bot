@@ -72,7 +72,7 @@ for (const [k, v] of [['offsetTop', 0], ['offsetLeft', 0], ['offsetHeight', 24],
 }
 
 const reg = new Map();
-const TABNAMES = ['home', 'goals', 'tasks', 'daily', 'res', 'data'];
+const TABNAMES = ['home', 'goals', 'tasks', 'daily', 'res', 'exams', 'data'];
 const tabs = TABNAMES.map((t) => {
   const e = new El('button'); e.dataset.tab = t; e.className = t === 'home' ? 'tab on' : 'tab'; return e;
 });
@@ -130,11 +130,25 @@ const DB = {
     { id: 'r4', owner: ME, kind: 'book', name: '英语语法新思维', platform: '', subject: '英语', url: '', status: 'done', created_at: '2026-09-08T00:00:00Z' },
     { id: 'r5', owner: OT, kind: 'course', name: '考研政治', platform: '徐涛', subject: '政治', url: '', status: 'doing', created_at: '2026-09-09T00:00:00Z' },
   ],
+  /* 考试成绩是**独立一张表**，不在原来六张表那条链路上。
+     故意留一场 score=null（还没出分），用来测「没填分」不等于 0 分。 */
+  exams: [
+    { id: 'e1', owner: ME, exam_date: '2026-09-12', name: '期中数学', subject: '数学', kind: 'school',
+      score: 108, full_score: 120, note: '最后一道大题算错', created_at: '2026-09-12T10:00:00Z' },
+    { id: 'e2', owner: ME, exam_date: '2026-09-20', name: '三角函数自测卷', subject: '数学', kind: 'paper',
+      score: null, full_score: null, note: '', created_at: '2026-09-20T10:00:00Z' },
+    { id: 'e3', owner: OT, exam_date: '2026-09-18', name: '英语月考', subject: '英语', kind: 'school',
+      score: 88, full_score: 100, note: '', created_at: '2026-09-18T10:00:00Z' },
+  ],
 };
 let seq = 100;
 /* 假库默认不认识列名，插什么都能成。要测「她还没跑 SQL」那条路，
    得能人为让下一次写操作失败 —— 用法：failNext = 'column "resource_id" does not exist' */
 let failNext = null;
+/* 让**某一张表的读**失败，模拟「这张表还没建」。
+   failNext 只管写（读要是一起失败，整页刷新就空掉了，测不出降级），
+   而「exams 表不存在」发生在 select 那一步，所以另开一个钩子。 */
+let failSelect = null;
 function qb(table) {
   const st = { op: 'select', eq: null, single: false };
   const o = {
@@ -151,6 +165,11 @@ function qb(table) {
       return new Promise((resolve) => {
         /* 只让**写**操作失败。读也一起失败的话整页刷新就空掉了，
            测出来的就不是「这一列不存在」而是「整个页面崩了」。 */
+        if (failSelect && st.op === 'select' && failSelect === table) {
+          failSelect = null;
+          resolve({ data: null, error: { message: "Could not find the table 'public." + table + "' in the schema cache" } });
+          return;
+        }
         if (failNext && st.op !== 'select') { const m = failNext; failNext = null; resolve({ data: null, error: { message: m } }); return; }
         const T = (DB[table] = DB[table] || []);
         const hit = (x) => !st.eq || x[st.eq[0]] === st.eq[1];
@@ -277,7 +296,7 @@ btns($('feed-filter'), '全部')[0].fire('click'); await tick();
 console.log('── 主页：入口跳转 ──');
 // entries 顺序 = goals, tasks, daily, res, data（下标 0 起）
 const entries = findAll($('home-entries'), (n) => n.className.includes('entry'));
-ok(entries.length === 5, '入口卡片 5 个');
+ok(entries.length === 6, '入口卡片 6 个（加了考试成绩）');
 ok(entries[0].textContent.includes('30 天目标'), '入口顺序：' + entries.map((e) => e.textContent.slice(0, 4)).join(' '));
 entries[0].fire('click'); await tick();
 ok(tabs[1].className.includes('on') && !tabs[0].className.includes('on'), '点「30 天目标」→ 页签切过去了');
@@ -354,7 +373,7 @@ ok(resTbl && findAll(resTbl, (n) => n.tagName === 'TH').map((n) => n.textContent
   '表格视图表头完整');
 ok(findAll($('res-cols'), (n) => hasCls(n, 'item')).length > 0, '图表下面的资源列表渲染出来了');
 ok(btns($('res-cols'), '删除').length > 0, '资源卡片上有删除按钮');
-tabs[5].fire('click'); await tick();
+tabs[6].fire('click'); await tick();
 ok($('export-meta').textContent.includes('目标 2'), '导出统计：' + $('export-meta').textContent);
 
 /* ══════════════════════════════════════════════════════════════
@@ -1005,6 +1024,229 @@ s1row.done_at = keepAt;
 tabs[1].fire('click'); await tick();
 ok($('mo-warn').hidden === true, '补回时间戳后提示自动消失');
 ok(dcOf(21) === '1', '9/21 回到日历上');
+
+/* ══════════════════════════════════════════════════════════════
+   本轮新增：考试成绩（exams 表）
+   这张表**不在原来六张表那条链路上**，所以这一段要盯两件事：
+   ① 它自己记得对、筛得对、改得对；
+   ② 它挂了不能连累别的页签（loadExams 是独立一条，不进 loadAll 的 Promise.all）。
+   ══════════════════════════════════════════════════════════════ */
+console.log('── 考试成绩：列出已有的三场 ──');
+ok(TABNAMES.length === 7 && tabs[5].dataset.tab === 'exams', '页签顺序：考试成绩在「学习资源」之后、「导出」之前');
+tabs[5].fire('click'); await tick();
+ok($('pane-exams').hidden === false, '考试成绩 pane 显示出来');
+ok($('ex-warn').hidden === true, '表在的时候不提示去跑 SQL');
+ok($('ex-lead').textContent.includes('留空'), '页头说明提到得分/满分可以留空');
+ok($('ex-date').value === TODAY, '日期默认填今天，实际 ' + $('ex-date').value);
+
+const exCols = $('ex-cols');
+ok(findAll(exCols, (n) => n.className.includes('who')).length === 2, '双栏（两个人各一栏）');
+ok(byCls(exCols, 'item').length === 3, '三场都列出来了，实际 ' + byCls(exCols, 'item').length);
+ok(exCols.textContent.includes('期中数学') && exCols.textContent.includes('英语月考'), '名称列出来');
+ok(exCols.textContent.includes('9 月 12 日'), '日期写成「9 月 12 日」——' + (exCols.textContent.match(/\d+ 月 \d+ 日[^0-9]*/) || [''])[0]);
+ok(/108/.test(exCols.textContent) && /120/.test(exCols.textContent) && exCols.textContent.includes('90%'),
+  '得分 / 满分 / 百分比都在');
+ok(exCols.textContent.includes('没填分') && !/0 分/.test(exCols.textContent),
+  '没填分的那场说「没填分」，不显示成 0 分');
+ok(exCols.textContent.includes('学校考试') && exCols.textContent.includes('自己做的试卷'),
+  '「学校考试 / 自己做的试卷」两类都标出来');
+ok(exCols.textContent.includes('最后一道大题算错'), '备注显示');
+ok(btns(exCols, '改这一场').length === 2, '只有自己那两场有「改这一场」，实际 ' + btns(exCols, '改这一场').length);
+ok(btns(exCols, '删除').length === 2, '只有自己那两场有删除按钮，实际 ' + btns(exCols, '删除').length);
+ok(btns(exCols, '改这一场').length + btns(exCols, '删除').length > 0, '（行动按钮确实渲染到了图表以外的位置）');
+
+console.log('── 考试成绩：小结的算法 ──');
+/* 平均只按**有满分**的场算：108/120=90、88/100=88 → 89。
+   那场没填分的绝不能混进去（混进去会被当成 0 分，把平均拉垮）。 */
+ok($('ex-sub').textContent.includes('一共 3 场'), '小结报总数：' + $('ex-sub').textContent);
+ok($('ex-sub').textContent.includes('学校考试 2') && $('ex-sub').textContent.includes('自己做的试卷 1'),
+  '小结里两类分开数');
+ok($('ex-sub').textContent.includes('平均 89%') && $('ex-sub').textContent.includes('2 场有满分'),
+  '平均只按有满分的 2 场算（89%），并说明是几场：' + $('ex-sub').textContent);
+
+console.log('── 考试成绩：科目候选 ──');
+const subjChips = findAll($('ex-subj'), (n) => n.tagName === 'BUTTON');
+ok(subjChips.length === 3, '科目候选 = 全部科目 + 数学 + 英语，实际 ' + subjChips.length);
+ok(subjChips.map((c) => c.textContent).some((t) => t.startsWith('数学')), '数学带着场数');
+const dlOpts = findAll($('ex-subject-list'), (n) => n.tagName === 'OPTION').map((n) => String(n.value));
+ok(dlOpts.includes('政治'), '候选里也带上「学习资源」里出现过的学科（政治）：' + dlOpts.join('/'));
+
+console.log('── 考试成绩：记一场新的 ──');
+const examCount0 = DB.exams.length;
+$('ex-date').value = '2026-09-25';
+$('ex-name').value = '物理随堂测';
+$('ex-subject').value = '物理';
+$('ex-kind').value = 'paper';
+$('ex-score').value = '82';
+$('ex-full').value = '100';
+$('ex-note').value = '电路那题漏了单位';
+$('ex-add').fire('click'); await tick(); await tick();
+
+ok(DB.exams.length === examCount0 + 1, '库里多了一场');
+const added = DB.exams.find((e) => e.name === '物理随堂测');
+ok(!!added && added.owner === ME, '新行带 owner = 我自己（否则 RLS 会拒）');
+ok(added.exam_date === '2026-09-25' && added.subject === '物理', '日期和科目存对：' + added.exam_date + ' / ' + added.subject);
+ok(added.kind === 'paper', '选了「自己做的试卷」，存的是 paper');
+ok(added.score === 82 && added.full_score === 100, '得分满分存成数字，不是字符串：' + typeof added.score);
+ok(added.note === '电路那题漏了单位', '备注也存了');
+ok($('ex-name').value === '' && $('ex-score').value === '' && $('ex-subject').value === '', '提交后表单清空');
+ok($('ex-add').textContent === '记下这一场', '按钮回到「记下这一场」');
+ok(byCls($('ex-cols'), 'item').length === 4, '新那场立刻出现在列表上，实际 ' + byCls($('ex-cols'), 'item').length);
+ok($('ex-cols').textContent.includes('82') && $('ex-cols').textContent.includes('82%'), '新那场的 82 和 82% 都在');
+
+console.log('── 考试成绩：只写名称、不填分 ──');
+const examCount1 = DB.exams.length;
+$('ex-name').value = '还没出分的那场';
+$('ex-score').value = '';
+$('ex-full').value = '';
+$('ex-add').fire('click'); await tick(); await tick();
+const blank = DB.exams.find((e) => e.name === '还没出分的那场');
+ok(DB.exams.length === examCount1 + 1 && !!blank, '只填名称也能记');
+/* 空字符串必须变成 null。写成 0 的话，这一场会以「0 分」混进平均里，
+   而「还没出分」和「考了 0 分」是两回事。 */
+ok(blank.score === null && blank.full_score === null, '没填的分数存成 null，不是 0：' + JSON.stringify([blank.score, blank.full_score]));
+
+console.log('── 考试成绩：名称和科目都不填 ──');
+const examCount2 = DB.exams.length;
+$('ex-name').value = '';
+$('ex-subject').value = '';
+$('ex-add').fire('click'); await tick();
+ok(DB.exams.length === examCount2, '两个都空着时不写库（免得列表里多一行认不出来的）');
+ok($('toast').textContent.includes('至少写个考试名称或科目'), '明说缺什么：' + $('toast').textContent);
+
+console.log('── 考试成绩：改这一场 ──');
+const rowOf = (name) => byCls($('ex-cols'), 'item').find((r) => r.textContent.includes(name));
+const targetId = DB.exams.find((e) => e.name === '物理随堂测').id;
+btns(rowOf('物理随堂测'), '改这一场')[0].fire('click'); await tick();
+ok($('ex-name').value === '物理随堂测' && $('ex-subject').value === '物理', '点「改这一场」把内容填回表单');
+ok($('ex-score').value === '82' && $('ex-full').value === '100', '分数也填回去：' + $('ex-score').value);
+ok($('ex-date').value === '2026-09-25' && $('ex-kind').value === 'paper', '日期和类别也填回去');
+ok($('ex-add').textContent === '保存修改' && $('ex-cancel').hidden === false,
+  '按钮变「保存修改」，旁边出现「取消」');
+ok(DB.exams.length === examCount2, '点「改」本身没有偷偷插一行新的');
+
+$('ex-score').value = '90';
+$('ex-add').fire('click'); await tick(); await tick();
+ok(DB.exams.length === examCount2, '保存修改**没有**多出一行，实际 ' + DB.exams.length);
+ok(DB.exams.filter((e) => e.name === '物理随堂测').length === 1, '还是只有那一场');
+ok(DB.exams.find((e) => e.id === targetId).score === 90, '分数改成了 90');
+ok($('ex-add').textContent === '记下这一场' && $('ex-cancel').hidden === true, '改完按钮复位、取消藏起来');
+ok($('ex-cols').textContent.includes('90%'), '列表跟着变成 90%');
+
+console.log('── 考试成绩：改到一半反悔 ──');
+btns(rowOf('物理随堂测'), '改这一场')[0].fire('click'); await tick();
+$('ex-score').value = '10';
+$('ex-cancel').fire('click'); await tick(); await tick();
+ok($('ex-score').value === '' && $('ex-name').value === '', '点「取消」把表单清空');
+ok(DB.exams.find((e) => e.id === targetId).score === 90, '库里还是 90，没被那半截改动写进去');
+ok($('ex-add').textContent === '记下这一场', '按钮也复位了');
+
+console.log('── 考试成绩：按科目 / 按人筛 ──');
+findAll($('ex-subj'), (n) => n.tagName === 'BUTTON').find((c) => c.textContent.startsWith('数学')).fire('click');
+await tick();
+/* 五场里科目是「数学」的只有期中数学和三角函数自测卷那两场
+   （物理随堂测是物理，英语月考是英语，还有一场没填科目） */
+ok(byCls($('ex-cols'), 'item').length === 2, '只看数学 → 两场，实际 ' + byCls($('ex-cols'), 'item').length);
+const mathItems = byCls($('ex-cols'), 'item');
+ok(mathItems.length > 0 && mathItems.every((r) => r.textContent.includes('数学')), '筛出来的每一场都是数学');
+ok(!$('ex-cols').textContent.includes('英语月考'), '别的科目被筛掉了');
+ok($('ex-sub').textContent.includes('一共 2 场') && $('ex-sub').textContent.includes('平均 90%'),
+  '小结跟着科目走（只剩数学两场，平均 90%）：' + $('ex-sub').textContent);
+ok(findAll($('ex-subj'), (n) => n.tagName === 'BUTTON').length === 4,
+  '筛科目之后候选按钮没跟着缩水（数学/物理/英语 + 全部科目），实际 '
+  + findAll($('ex-subj'), (n) => n.tagName === 'BUTTON').map((c) => c.textContent).join('|'));
+findAll($('ex-subj'), (n) => n.tagName === 'BUTTON').find((c) => c.textContent === '全部科目').fire('click');
+await tick();
+ok(byCls($('ex-cols'), 'item').length === 5, '回到全部科目 → 五场，实际 ' + byCls($('ex-cols'), 'item').length);
+
+findAll($('ex-scope'), (n) => n.tagName === 'BUTTON').find((c) => c.textContent === '只看对方').fire('click');
+await tick();
+/* twoCols 有一条「自己那栏永远在」的规矩，所以这里我那一栏还会在，
+   但必须是空的、而且**明说是被筛掉的** —— 不能写成「还没记过考试」
+   让她以为自己的记录没了。 */
+ok(byCls($('ex-cols'), 'item').length === 1, '只看对方 → 只剩对方那一场，实际 ' + byCls($('ex-cols'), 'item').length);
+ok($('ex-cols').textContent.includes('英语月考') && !$('ex-cols').textContent.includes('期中数学'),
+  '我自己的那几场都不在列表里');
+ok($('ex-cols').textContent.includes('小 B'), '对方那一栏在');
+ok(/被上面的筛选挡住了/.test($('ex-cols').textContent) && !/还没记过考试/.test($('ex-cols').textContent),
+  '我那一栏空着，但说的是「被筛选挡住了」而不是「还没记过」');
+ok(findAll($('ex-scope'), (n) => n.tagName === 'BUTTON').find((c) => hasCls(c, 'primary')).textContent === '只看对方',
+  '「只看对方」这个按钮是选中态');
+findAll($('ex-scope'), (n) => n.tagName === 'BUTTON').find((c) => c.textContent === '全部').fire('click');
+await tick();
+ok(byCls($('ex-cols'), 'item').length === 5, '回到全部 → 五场');
+ok($('ex-sub').textContent.includes('一共 5 场'), '小结回到全部');
+
+console.log('── 考试成绩：删除 ──');
+const examCount3 = DB.exams.length;
+btns(rowOf('还没出分的那场'), '删除')[0].fire('click'); await tick(); await tick();
+ok(DB.exams.length === examCount3 - 1, '删除真的删掉一行');
+ok(!DB.exams.some((e) => e.name === '还没出分的那场'), '删的就是那一场');
+ok($('ex-cols').textContent.includes('还没出分的那场') === false, '删完列表里也没了');
+
+console.log('── 考试成绩：这条链路断了也不能连累别的页签 ──');
+/* setup-6-exams.sql 还没跑：exams 表根本不存在（select 就报 schema cache 找不到）。
+   要求：① 这一页明说去跑脚本；② 记不了东西，但别白屏；
+   ③ **原来六张表照常读**（loadExams 是独立一条，绝不在 loadAll 的 Promise.all 里）。 */
+/* 先往库里**加**一条目标，再让 exams 读失败、点刷新。
+   断言目标页必须出现这条新目标 —— 光断言「原来那条还在」抓不住问题：
+   S.goals 是上一次读到的旧数据，刷新失败时页面照旧显示旧值，看起来一切正常。
+   （也不能用「改标题」的办法：假库返回的是同一批**对象引用**，
+     改 DB 里的字段等于直接改了 S.goals，不用刷新就"看见"了，断言是空转的。） */
+DB.goals.push({
+  id: 'g-新加的', owner: ME, period_start: '2026-09-25', title: '刷新后才出现的目标',
+  detail: '', target: 1, progress: 0, done: false, done_at: null, created_at: '2026-09-25T00:00:00Z',
+});
+failSelect = 'exams';
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('ex-warn').hidden === false, '给出「还没建表」的提示，而不是静默空白');
+ok($('ex-warn').textContent.includes('setup-6-exams.sql'), '提示里指明了要跑哪个脚本');
+ok($('ex-lead').textContent.includes('setup-6-exams.sql'), '页头也说了要先跑脚本');
+ok($('ex-cols').textContent.includes('这张表还没建'), '这一页降级成「这张表还没建」，没抛异常');
+ok(tabs[3].dataset.tab === 'daily', '（页签对象还在）');
+tabs[1].fire('click'); await tick();
+ok($('goals-cols').textContent.includes('刷新后才出现的目标'),
+  '目标页读到的是刷新后的数据（exams 读失败没把六张表带崩）');
+tabs[4].fire('click'); await tick();
+ok($('res-tiles').textContent.includes('资源总数'), '资源页照常渲染');
+const examCount4 = DB.exams.length;
+tabs[5].fire('click'); await tick();
+$('ex-name').value = '表还没建时写的';
+$('ex-add').fire('click'); await tick();
+ok(DB.exams.length === examCount4, '表不在时不写库（点了也不会报出 Postgres 原文）');
+ok($('toast').textContent.includes('setup-6-exams.sql'), '拦下来并告诉她去跑脚本：' + $('toast').textContent);
+$('ex-name').value = '';
+failSelect = null;
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('ex-warn').hidden === true && byCls($('ex-cols'), 'item').length === 4,
+  '跑完脚本（这里是把钩子放掉）后恢复正常，实际 ' + byCls($('ex-cols'), 'item').length + ' 场');
+ok($('ex-cancel').hidden === true && $('ex-add').textContent === '记下这一场', '表单也是正常态');
+/* 把上面为了测「刷新确实读到了新数据」而临时加的那条目标拿掉 */
+DB.goals = DB.goals.filter((g) => g.id !== 'g-新加的');
+
+console.log('── 考试成绩：导出 / 导入 ──');
+tabs[6].fire('click'); await tick();
+ok($('export-meta').textContent.includes('考试 ' + DB.exams.length),
+  '导出统计里带上了考试场数：' + $('export-meta').textContent);
+tabs[5].fire('click'); await tick();
+
+const snap = {
+  app: 'study-collab', version: 1,
+  data: {
+    exams: [
+      { id: 'imp-1', owner: ME, exam_date: '2026-08-01', name: '导入进来的历史考试', subject: '语文',
+        kind: 'school', score: 95, full_score: 100, note: '' },
+      { id: 'imp-2', owner: OT, exam_date: '2026-08-02', name: '对方的历史考试', subject: '语文',
+        kind: 'school', score: 60, full_score: 100, note: '' },
+    ],
+  },
+};
+$('file-import').fire('change', { target: { files: [{ text: async () => JSON.stringify(snap) }] } });
+await tick(); await tick();
+ok(DB.exams.some((e) => e.id === 'imp-1'), '快照里我自己的考试导进来了');
+ok(!DB.exams.some((e) => e.id === 'imp-2'), '对方那一行被跳过（RLS 只让写自己的）');
+ok($('import-meta').textContent.includes('跳过 1 行'), '跳过几行说清楚：' + $('import-meta').textContent);
+ok(!$('import-meta').textContent.includes('setup-6-exams.sql'), '表在的时候不啰嗦脚本的事');
 
 console.log('── 导出 ──');
 $('btn-export').fire('click'); await tick();

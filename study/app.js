@@ -29,6 +29,12 @@
   ];
   const KIND_LABEL   = { book: '工具书', course: '网课', teacher: '老师' };
   const STATUS_LABEL = { todo: '待开始', doing: '进行中', done: '已完成' };
+  /* 考试成绩分两类：学校统一考的 vs 自己找卷子做的。 */
+  const EXAM_KINDS     = [
+    { key: 'school', label: '学校考试' },
+    { key: 'paper',  label: '自己做的试卷' },
+  ];
+  const EXAM_KIND_LABEL = { school: '学校考试', paper: '自己做的试卷' };
   const GOAL_PERIOD_DAYS = 30;
 
   /* ── 状态 ──────────────────────────────────────────────────── */
@@ -37,7 +43,7 @@
     profileMap: {},       // id -> display_name
     avatarMap: {},        // id -> 头像 data URL（空串表示没上传过）
     profileList: [],
-    goals: [], tasks: [], subtasks: [], daily: [], resources: [],
+    goals: [], tasks: [], subtasks: [], daily: [], resources: [], exams: [],
     tab: 'home',          // 登录后落在主页
     mood: null,
     month: '',            // 月行程表显示哪个月 'YYYY-MM'，空 = 本月
@@ -58,6 +64,14 @@
     resScope: 'all',      // all | me | other
     feedKind: 'all',      // all | done | log | res
     noDoneAt: false,      // 库里还没加 done_at 列时置位（setup-3-feed.sql 跑之前）
+    /* 考试成绩。这张表是**独立一张**，不掺进上面六个数组的任何一条链路。
+       exScope   all | me | other（和资源同一个口径）
+       exSubject 空串 = 不筛科目；否则只看这一科
+       exEdit    正在改的那一场的 id，null = 新建 */
+    exScope: 'all',
+    exSubject: '',
+    exEdit: null,
+    exNoTable: false,     // 库里还没建 exams 表时置位（setup-6-exams.sql 跑之前）
   };
 
   /* ── 小工具 ────────────────────────────────────────────────── */
@@ -333,6 +347,23 @@
     S.subtasks  = res[3].data || [];
     S.daily     = res[4].data || [];
     S.resources = res[5].data || [];
+    await loadExams();          // 单独一条，失败不影响上面任何一张表
+  }
+
+  /* 考试成绩**不能塞进上面那个 Promise.all** —— 那个数组里任何一条报错，
+     整个 loadAll 就抛，六张表一起读不出来。setup-6-exams.sql 还没跑时
+     exams 表不存在（PostgREST 报 schema cache 找不到），这时：
+     其余页面照常用，只把 exNoTable 置位，「考试成绩」那一页明说去跑脚本。 */
+  async function loadExams() {
+    const r = await sb.from('exams').select('*').order('exam_date', { ascending: false });
+    if (r.error) {
+      S.exNoTable = true;
+      S.exams = [];
+      return false;
+    }
+    S.exNoTable = false;
+    S.exams = r.data || [];
+    return true;
   }
 
   async function refresh() {
@@ -369,6 +400,11 @@
     }
     if (/link_id/i.test(m)) {
       return '库里还没有「绑成同一件事」这一列。去 Supabase 后台跑一次 study/setup-5-link.sql 再回来。';
+    }
+    /* 表整个不存在时 PostgREST 说的是 "Could not find the table 'public.exams'
+       in the schema cache" —— 别把原文甩给她。 */
+    if (/exams/i.test(m) && /(schema cache|does not exist|relation|not find)/i.test(m)) {
+      return '库里还没有考试成绩这张表。去 Supabase 后台跑一次 study/setup-6-exams.sql 再回来。';
     }
     return m;
   }
@@ -1530,7 +1566,244 @@
     tip.style.top = Math.max(0, ev.clientY - r.top - 10) + 'px';
   }
 
-  /* ── 页签五：导出 / 导入 ──────────────────────────────────── */
+  /* ── 页签五：考试成绩 ──────────────────────────────────────── */
+  /* 这一页是**独立一张表**（exams），不在原来六张表的任何一条链路上：
+     不参与进度条、月行程表、动态流 —— 考试分数和「今天推进了什么」是两回事，
+     混进去会让那三块的口径变浑。要联动的话是下一步的事。 */
+
+  const fmtNum = (n) => {
+    const v = Number(n);
+    return isFinite(v) ? String(Math.round(v * 100) / 100) : String(n == null ? '' : n);
+  };
+  /* 空串要变成 null 而不是 0 —— 0 分和「还没出分」是两回事 */
+  function numOrNull(v) {
+    const t = String(v == null ? '' : v).trim();
+    if (!t) return null;
+    const n = Number(t);
+    return isFinite(n) ? n : null;
+  }
+
+  const examInScope = (e) => {
+    if (S.exScope === 'me')    return isMine(e);
+    if (S.exScope === 'other') return !isMine(e);
+    return true;
+  };
+  const examInSubject = (e) => !S.exSubject || (e.subject || '').trim() === S.exSubject;
+
+  /* 出现过的科目。考试表里的和「学习资源」里的合在一起 —— 同名就能对上，
+     省得同一科写两个名字（比如「数学」和「数分」）。 */
+  function examSubjects() {
+    const set = new Set();
+    for (const e of S.exams) { const s = (e.subject || '').trim(); if (s) set.add(s); }
+    for (const r of S.resources) { const s = (r.subject || '').trim(); if (s) set.add(s); }
+    return [...set].sort((a, b) => a.localeCompare(b, 'zh'));
+  }
+
+  /* 9月20日 · 周六。库里是 date 字符串，别过 new Date() 再取本地日 ——
+     直接解析 'YYYY-MM-DD'，免得时区把它挪一天。 */
+  const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  function examDateText(iso) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+    if (!m) return iso || '没填日期';
+    const [, y, mo, d] = m.map(Number);
+    const wd = WD[new Date(y, mo - 1, d).getDay()];
+    const md = mo + ' 月 ' + d + ' 日';
+    return (y === new Date().getFullYear() ? md : y + ' 年 ' + md) + ' ' + wd;
+  }
+
+  function examScoreEl(e) {
+    if (e.score == null || e.score === '') return h('div', { class: 'exscore none', text: '没填分' });
+    const s = Number(e.score);
+    const f = (e.full_score == null || e.full_score === '') ? null : Number(e.full_score);
+    const p = (f && f > 0) ? Math.round((s / f) * 100) : null;
+    return h('div', { class: 'exscore' },
+      h('b', { text: fmtNum(s) }),
+      f != null ? h('span', { class: 'fs', text: ' / ' + fmtNum(f) }) : null,
+      p != null ? h('span', { class: 'pc', text: p + '%' }) : null
+    );
+  }
+
+  function renderExams() {
+    const warn = $('ex-warn');
+    warn.hidden = !S.exNoTable;
+    if (S.exNoTable) {
+      warn.textContent = '库里还没有考试成绩这张表。去 Supabase 后台 → SQL Editor，'
+        + '跑一次 study/setup-6-exams.sql，再回来点「刷新」。在那之前这一页记不了东西。';
+    }
+    $('ex-lead').textContent = S.exNoTable
+      ? '先跑一次 setup-6-exams.sql，这一页才能存。'
+      : '记下哪天考的、哪一科、考了多少分。得分和满分都可以留空（还没出分就先记个日期），'
+        + '留空就只显示分数、不算百分比。同一场考试的分数只属于你自己，对方看得到但改不了。';
+
+    if (!$('ex-date').value) $('ex-date').value = today();
+
+    /* 科目候选：自己写过的 + 学习资源里的学科 */
+    const dl = $('ex-subject-list');
+    clear(dl);
+    for (const s of examSubjects()) dl.appendChild(h('option', { value: s }));
+
+    const scoped = S.exams.filter(examInScope);
+    renderExamScopeChips();
+    renderExamSubjectChips(scoped);
+    renderExamSummary(scoped);
+
+    twoCols($('ex-cols'), scoped.filter(examInSubject), (owner, rows, mine) => {
+      if (!rows.length) {
+        /* 空栏有三种原因，说错哪一种都会让她以为数据丢了：
+           ① 表还没建；② 这一栏被筛掉了（只看我/只看对方 + 科目筛）；
+           ③ 真的还没记过。`twoCols` 有一条「自己那栏永远在」的规矩，
+           所以 ② 一定会出现空栏 —— 不解释清楚就成了「我的记录不见了」。 */
+        if (S.exNoTable) return emptyNote('考试成绩这张表还没建，先跑一次 study/setup-6-exams.sql。');
+        const hidden = S.exams.filter((e) => (mine ? isMine(e) : !isMine(e))).length;
+        if (hidden) return emptyNote('有 ' + hidden + ' 场，被上面的筛选挡住了 —— 切回「全部」。');
+        return emptyNote(mine ? '还没记过考试。上面填一场试试。' : '对方还没记过考试。');
+      }
+      const wrap = h('div');
+      for (const e of rows) {
+        wrap.appendChild(h('div', { class: 'item' },
+          h('div', { class: 't' },
+            h('span', { class: 'grow', text: e.name || (e.subject || '没写名称') }),
+            examScoreEl(e)
+          ),
+          h('div', { class: 'm' },
+            h('span', { text: examDateText(e.exam_date) }),
+            h('span', { class: 'pill', text: EXAM_KIND_LABEL[e.kind] || '学校考试' }),
+            e.subject ? h('span', { class: 'pill', text: e.subject }) : null
+          ),
+          e.note ? h('div', { class: 'd', text: e.note }) : null,
+          mine ? h('div', { class: 'acts' },
+            h('button', { class: 'tiny', text: '改这一场', onclick: () => editExam(e) }),
+            h('button', {
+              class: 'tiny danger', text: '删除',
+              onclick: () => removeRow('exams', e.id,
+                '这场考试记录（' + examDateText(e.exam_date) + ' ' + (e.name || e.subject || '') + '）'),
+            })
+          ) : null
+        ));
+      }
+      return wrap;
+    });
+  }
+
+  function renderExamScopeChips() {
+    const box = $('ex-scope');
+    clear(box);
+    [['all', '全部'], ['me', '只看我'], ['other', '只看对方']].forEach(([k, label]) => {
+      box.appendChild(h('button', {
+        class: 'tiny' + (S.exScope === k ? ' primary' : ''), text: label,
+        onclick: () => { S.exScope = k; S.exSubject = ''; renderExams(); },
+      }));
+    });
+  }
+
+  function renderExamSubjectChips(scoped) {
+    const box = $('ex-subj');
+    clear(box);
+    /* 候选科目按**当前范围**里真出现过的算，不把全库的科目都列出来 */
+    const seen = new Map();
+    for (const e of scoped) {
+      const s = (e.subject || '').trim();
+      if (!s) continue;
+      seen.set(s, (seen.get(s) || 0) + 1);
+    }
+    if (!seen.size && !S.exSubject) return;
+    const items = [['', '全部科目']].concat(
+      [...seen.entries()].sort((a, b) => a[0].localeCompare(b[0], 'zh')).map(([s, n]) => [s, s + ' ' + n])
+    );
+    for (const [key, label] of items) {
+      box.appendChild(h('button', {
+        class: 'tiny' + (S.exSubject === key ? ' primary' : ''), text: label,
+        onclick: () => { S.exSubject = key; renderExams(); },
+      }));
+    }
+  }
+
+  function renderExamSummary(scoped) {
+    const rows = scoped.filter(examInSubject);
+    if (!rows.length) { $('ex-sub').textContent = S.exNoTable ? '这张表还没建。' : '还没有记录。'; return; }
+
+    const school = rows.filter((e) => e.kind !== 'paper').length;
+    let txt = '这个范围里一共 ' + rows.length + ' 场（学校考试 ' + school
+      + ' · 自己做的试卷 ' + (rows.length - school) + '）';
+
+    /* 百分比只在有满分的那些场里算 —— 混进没满分的会把平均拉歪。
+       所以这里明说「按满分折算 n 场」，不假装是全体的平均。 */
+    const withPct = rows
+      .filter((e) => e.score != null && e.score !== '' && Number(e.full_score) > 0)
+      .map((e) => (Number(e.score) / Number(e.full_score)) * 100);
+    if (withPct.length) {
+      const avg = Math.round(withPct.reduce((a, b) => a + b, 0) / withPct.length);
+      txt += ' · 按满分折算平均 ' + avg + '%（' + withPct.length + ' 场有满分）';
+    }
+    $('ex-sub').textContent = txt;
+  }
+
+  /* 表单：新建 / 改这一场共用。S.exEdit 是 null 就是新建。
+     改的时候按钮变「保存修改」，旁边冒出一个「取消」——
+     不然她点进「改」之后没有退路。 */
+  function resetExamForm() {
+    S.exEdit = null;
+    $('ex-name').value = '';
+    $('ex-subject').value = '';
+    $('ex-score').value = '';
+    $('ex-full').value = '';
+    $('ex-note').value = '';
+    $('ex-kind').value = 'school';
+    $('ex-date').value = today();
+    $('ex-add').textContent = '记下这一场';
+    $('ex-cancel').hidden = true;
+  }
+
+  function editExam(e) {
+    S.exEdit = e.id;
+    $('ex-date').value = e.exam_date || today();
+    $('ex-name').value = e.name || '';
+    $('ex-subject').value = e.subject || '';
+    $('ex-kind').value = e.kind === 'paper' ? 'paper' : 'school';
+    $('ex-score').value = (e.score == null || e.score === '') ? '' : fmtNum(e.score);
+    $('ex-full').value  = (e.full_score == null || e.full_score === '') ? '' : fmtNum(e.full_score);
+    $('ex-note').value = e.note || '';
+    $('ex-add').textContent = '保存修改';
+    $('ex-cancel').hidden = false;
+    $('ex-name').focus();
+  }
+
+  async function addExam() {
+    if (S.exNoTable) { toast(schemaWarn({ message: 'exams schema cache' }), true); return; }
+    const name    = $('ex-name').value.trim();
+    const subject = $('ex-subject').value.trim();
+    /* 名称和科目至少要有一个，否则列表里会出现一行什么都认不出来的记录 */
+    if (!name && !subject) { toast('至少写个考试名称或科目', true); return; }
+
+    const payload = {
+      owner:      S.me.id,
+      exam_date:  $('ex-date').value || today(),
+      name:       name,
+      subject:    subject,
+      kind:       $('ex-kind').value === 'paper' ? 'paper' : 'school',
+      score:      numOrNull($('ex-score').value),
+      full_score: numOrNull($('ex-full').value),
+      note:       $('ex-note').value.trim(),
+    };
+
+    const btn = $('ex-add');
+    const editing = S.exEdit;
+    btn.disabled = true;
+    /* 改的时候走 update —— insert 会多出一条；owner 照样带着，
+       RLS 的 update 策略 with check 里也要 owner = auth.uid()（本来就是我自己的行）。 */
+    const r = editing
+      ? await sb.from('exams').update(payload).eq('id', editing)
+      : await sb.from('exams').insert(payload);
+    btn.disabled = false;
+
+    if (r.error) { toast(schemaWarn(r.error), true); return; }
+    const wasEditing = !!editing;
+    resetExamForm();
+    toast(wasEditing ? '已更新' : '记下了');
+    await refresh();
+  }
+
+  /* ── 页签六：导出 / 导入 ──────────────────────────────────── */
   function snapshot() {
     return {
       app: APP_ID,
@@ -1539,17 +1812,20 @@
       backend: {
         supabase_url: SUPABASE_URL,
         supabase_key: SUPABASE_KEY,
-        tables: ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources'],
-        schema_sql: 'study/setup.sql（建表 + RLS 策略，可重复执行）',
+        tables: ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources', 'exams'],
+        schema_sql: 'study/setup.sql + setup-3-feed.sql + setup-4-chapters.sql + setup-5-link.sql'
+                  + ' + setup-6-exams.sql（都可重复执行）',
       },
       me: S.me ? { id: S.me.id, email: S.me.email, display_name: nameOf(S.me.id) } : null,
       counts: {
         profiles: S.profileList.length, goals: S.goals.length, tasks: S.tasks.length,
         subtasks: S.subtasks.length, daily_logs: S.daily.length, resources: S.resources.length,
+        exams: S.exams.length,
       },
       data: {
         profiles: S.profileList, goals: S.goals, tasks: S.tasks,
         subtasks: S.subtasks, daily_logs: S.daily, resources: S.resources,
+        exams: S.exams,
       },
     };
   }
@@ -1557,7 +1833,8 @@
   function renderData() {
     $('export-meta').textContent =
       '目标 ' + S.goals.length + ' · 大任务 ' + S.tasks.length + ' · 小任务 ' + S.subtasks.length +
-      ' · 日记 ' + S.daily.length + ' · 资源 ' + S.resources.length;
+      ' · 日记 ' + S.daily.length + ' · 资源 ' + S.resources.length +
+      ' · 考试 ' + S.exams.length;
   }
 
   function doExport() {
@@ -1578,12 +1855,15 @@
     catch (e) { toast('这个文件不是合法 JSON', true); return; }
     if (!snap || snap.app !== APP_ID || !snap.data) { toast('这不是本页面导出的快照', true); return; }
 
-    const order = ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources'];
-    let written = 0, skipped = 0;
+    const order = ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources', 'exams'];
+    let written = 0, skipped = 0, noTable = '';
     $('import-meta').textContent = '导入中…';
 
     for (const t of order) {
       const rows = Array.isArray(snap.data[t]) ? snap.data[t] : [];
+      /* 表还没建就跳过（放在最后，前面几张表已经写完了）——
+         别让「考试成绩这张表还没跑 SQL」把整次导入弄成失败。 */
+      if (t === 'exams' && S.exNoTable) { if (rows.length) noTable = 'exams'; continue; }
       const mine = rows.filter((r) => (t === 'profiles' ? r.id === S.me.id : r.owner === S.me.id));
       skipped += rows.length - mine.length;
       if (!mine.length) continue;
@@ -1595,8 +1875,9 @@
         written += chunk.length;
       }
     }
-    $('import-meta').textContent = '写入 ' + written + ' 行，跳过 ' + skipped + ' 行（属于对方的，权限规则不允许我改）';
-    toast('导入完成');
+    $('import-meta').textContent = '写入 ' + written + ' 行，跳过 ' + skipped + ' 行（属于对方的，权限规则不允许我改）'
+      + (noTable ? '；快照里的考试成绩没导 —— 库里还没这张表，先跑 study/setup-6-exams.sql' : '');
+    toast(noTable ? '导入完成（考试成绩那部分没导，见下方说明）' : '导入完成');
     await refresh();
   }
 
@@ -1761,6 +2042,7 @@
      ['tasks', '大任务拆解', '推进小任务进度'],
      ['daily', '今日完成情况', '记下今天完成了什么'],
      ['res', '学习资源', '工具书 / 网课 / 老师'],
+     ['exams', '考试成绩', '记下每场考了多少分'],
      ['data', '导出 / 导入', '存一份完整快照']]
       .forEach(([tab, name, desc]) => box.appendChild(h('button', {
         class: 'entry', onclick: () => goTab(tab),
@@ -1786,7 +2068,7 @@
   /* ── 渲染分发 ──────────────────────────────────────────────── */
   const RENDER = {
     home: renderHome, goals: renderGoals, tasks: renderTasks,
-    daily: renderDaily, res: renderRes, data: renderData,
+    daily: renderDaily, res: renderRes, exams: renderExams, data: renderData,
   };
   function renderCurrent() { (RENDER[S.tab] || renderHome)(); }
 
@@ -1924,6 +2206,10 @@
       await refresh();
     });
 
+    /* 考试成绩：一次记一场。改的时候同一个按钮变成保存。 */
+    $('ex-add').addEventListener('click', addExam);
+    $('ex-cancel').addEventListener('click', () => { resetExamForm(); toast('没改，表单已清空'); });
+
     $('btn-export').addEventListener('click', doExport);
     $('btn-import').addEventListener('click', () => $('file-import').click());
     $('file-import').addEventListener('change', async (e) => {
@@ -1943,7 +2229,12 @@
     // 退出再登录会再进这里一次；同名的旧频道必须先撤掉，否则 SDK 会报重名
     if (rtChannel) { sb.removeChannel(rtChannel); rtChannel = null; }
     let ch = sb.channel('study-collab');
-    for (const t of ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources']) {
+    const tables = ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources'];
+    /* exams 表还没建的时候先不订它 —— 订阅一个不存在的表会让整条频道跟着报错，
+       那会连累另外六张表的实时同步。她已经跑过 setup-6-exams.sql 才有这一条。
+       （刚跑完 SQL 那一次要刷新页面，订阅才会补上 exams。） */
+    if (!S.exNoTable) tables.push('exams');
+    for (const t of tables) {
       ch = ch.on('postgres_changes', { event: '*', schema: 'public', table: t }, () => onRealtime(t));
     }
     rtChannel = ch;
@@ -2046,10 +2337,12 @@
     if (!$('g-start').value) $('g-start').value = today();
     if (!$('d-date').value)  $('d-date').value  = today();
     paintMeAvatar();
+    /* 订阅要等 loadAll 之后 —— 得先知道 exams 表在不在，才决定订不订它。
+       finally 保证读失败时也会连上实时（否则读挂了就永远停在「连接中…」）。 */
     loadAll()
       .then(() => { paintMeAvatar(); goTab('home'); })   // 登录后落在主页
-      .catch((e) => toast('读取失败：' + e.message, true));
-    subscribeRealtime();
+      .catch((e) => toast('读取失败：' + e.message, true))
+      .finally(() => subscribeRealtime());
   }
 
   function showLogin() {
