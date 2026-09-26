@@ -6,7 +6,13 @@
 :root{
   color-scheme: light;
   --surface-1:#fcfcfb; --page:#f9f9f7;
-  --text-primary:#0b0b0b; --text-secondary:#52514e; --muted:#898781;
+  --text-primary:#0b0b0b; --text-secondary:#52514e; --muted:#6e6c66;
+  /* ⚠️ 浅色的 --muted 是 #6e6c66（不是我原来那只 #898781）：
+     原来的值压在 --page 上只有 3.50:1，而它被当成正文用在了 .sub / .hint /
+     .item .m / .empty 这些地方 —— 一处一处换 token 换不干净，直接把这一档压深，
+     4.98:1 过 AA。深色那边 --muted 在 #1a1a19 上是 4.85:1，本来就没问题，
+     保持原值不动（两套值不同是**故意的**）。
+     check-contrast.mjs 里那一串 TEXT_ON 就是拿来守这条的。 */
   --grid:#e1e0d9; --axis:#c3c2b7; --border:rgba(11,11,11,0.10);
   --series-1:#2a78d6;   /* 我 */
   --series-2:#eb6834;   /* 对方 */
@@ -52,10 +58,10 @@ body{
   font-size:14px; line-height:1.55; padding:22px 16px 72px;
 }
 .wrap{max-width:1080px;margin:0 auto}
-h1{font-size:19px;margin:0;font-weight:650;letter-spacing:-.01em}
+h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.012em}
 h2{font-size:14px;margin:0 0 12px;font-weight:650}
 .sub{color:var(--muted);font-size:12.5px;margin:4px 0 0}
-.hint{font-size:11.5px;color:var(--muted);margin:5px 0 0}
+.hint{font-size:11.5px;color:var(--muted);margin:5px 0 0;line-height:1.6}
 /* 校训：一句话，不能抢标题的戏。
    用中文衬线（宋体一系）+ 一点字间距做出「引文」的味道 —— 不加底色、不加边框、
    不加图标，页面已经够多卡片了，装饰一多就俗。
@@ -63,18 +69,21 @@ h2{font-size:14px;margin:0 0 12px;font-weight:650}
       --muted 当正文只有 3.50:1，过不了 AA，这个坑踩过两次了。 */
 .motto{
   font-family:"Songti SC","STSong","SimSun",Georgia,serif;
-  font-size:12.5px;color:var(--text-secondary);
-  margin:7px 0 0;letter-spacing:.04em;line-height:1.5;
+  font-size:13px;color:var(--text-secondary);
+  margin:8px 0 0;letter-spacing:.05em;line-height:1.5;
 }
 .login-card .motto{font-size:13.5px;margin-top:11px;letter-spacing:.05em}
 .err{font-size:12.5px;color:var(--critical);margin:10px 0 0}
 b{font-weight:650}
 
-header.top{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+header.top{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;margin-bottom:20px}
 header.top .grow{flex:1;min-width:180px}
+/* 页头那三个控件（实时药丸 / 刷新 / 退出）和标题块对齐到同一条基线上，
+   不然头像和按钮各站各的高度，顶上看过去是散的 */
+header.top > .row{align-items:center;padding-top:2px}
 
-.card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;
-  padding:18px;box-shadow:var(--shadow);margin-bottom:16px}
+.card{background:var(--surface-1);border:1px solid var(--border);border-radius:14px;
+  padding:20px;box-shadow:var(--shadow);margin-bottom:16px}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
 .row.tight{align-items:center}
 .field{margin-top:0}
@@ -91,24 +100,31 @@ input:focus,select:focus,textarea:focus{outline:2px solid var(--series-1);outlin
 input[type=number]{max-width:120px}
 input[type=date]{max-width:170px}
 
-button{font:inherit;font-size:13px;font-weight:550;color:var(--text-primary);
-  background:var(--surface-1);border:1px solid var(--border);border-radius:8px;
-  padding:7px 13px;cursor:pointer}
+button{font:inherit;font-size:12.5px;font-weight:550;color:var(--text-primary);
+  background:var(--surface-1);border:1px solid var(--border);border-radius:9px;
+  padding:6px 12px;cursor:pointer;transition:background .12s,border-color .12s}
 button:hover{background:var(--chip)}
 button.primary{background:var(--series-1);border-color:var(--series-1);color:#fff}
 button.primary:hover{filter:brightness(1.08)}
-button.danger{color:var(--critical);border-color:var(--critical)}
-button.tiny{padding:2px 8px;font-size:12px}
+/* 「删除」改成幽灵按钮：一屏里它出现得最多，红描边一个框一个框地排下去
+   比正文还抢眼。红只留在字上（--critical 压 --surface-1 4.6:1，过 AA），
+   鼠标停上去才浮出底色。 */
+button.danger{color:var(--critical);border-color:transparent;background:transparent}
+button.danger:hover{background:color-mix(in srgb, var(--critical) 10%, transparent)}
+button.tiny{padding:3px 9px;font-size:12px}
 button.block{width:100%;justify-content:center;margin-top:16px;padding:9px}
 button:disabled{opacity:.45;cursor:not-allowed}
+/* 键盘走到哪儿要看得见（原来只有输入框有 focus 样式） */
+button:focus-visible,summary:focus-visible,.tab:focus-visible,.chip:focus-visible{
+  outline:2px solid var(--series-1);outline-offset:2px}
 
 /* ── 登录 ──（样式在文件末尾的「登录页」段，这里不重复定义，
    否则又会多出一条 display —— 见文件顶部 [hidden] 那条注释） */
 
 /* ── 页签 ── */
-.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:18px;
   border-bottom:1px solid var(--grid);padding-bottom:0}
-.tab{background:none;border:none;border-bottom:2px solid transparent;border-radius:0;
+.tab{background:none;border:none;border-bottom:2px solid transparent;border-radius:8px 8px 0 0;
   padding:8px 12px;color:var(--text-secondary);font-weight:550}
 .tab:hover{background:var(--chip)}
 .tab.on{color:var(--series-1);border-bottom-color:var(--series-1);font-weight:650}
@@ -126,6 +142,13 @@ button:disabled{opacity:.45;cursor:not-allowed}
 
 .item{border:1px solid var(--border);border-radius:10px;padding:11px 12px;margin-bottom:9px;background:var(--page)}
 .item.done{opacity:.62}
+/* 已经装在「两个人的面板」里的条目不要再各带一个框 ——
+   面板本身有边框（还带一条身份色），里面再套一层就是框里框，
+   一屏四五个条目叠起来看着全是线。这里退回**列表行**：只留一条细分隔线。 */
+.pcard .item,.who .item{background:transparent;border-color:transparent;border-radius:0;
+  border-bottom:1px solid var(--grid);padding:10px 0;margin-bottom:0}
+.pcard .item:last-child,.who .item:last-child{border-bottom:none;padding-bottom:0}
+.item .acts button{font-size:12px;padding:4px 10px}
 .item .t{font-weight:600;font-size:13.5px;display:flex;gap:8px;align-items:flex-start}
 .item .t .grow{flex:1;min-width:0;word-break:break-word}
 .item .d{font-size:12px;color:var(--text-secondary);margin-top:3px;word-break:break-word}
@@ -158,8 +181,11 @@ button:disabled{opacity:.45;cursor:not-allowed}
   border:1px solid var(--border);border-radius:7px;cursor:pointer}
 .sub select.link:hover{border-color:var(--series-1)}
 /* 关联那一整条：挂在名字底下（左边缩进对齐输入框），
-   [已关联的每一条一个 chip（点一下解开）][＋ 关联…] 排一行，不够就折行。 */
-.lks{flex:1 1 100%;display:flex;flex-wrap:wrap;align-items:center;gap:6px;
+   [已关联的每一条一个 chip（点一下解开）][＋ 关联…] 排一行，不够就折行。
+   ⚠️ order:9 不能省：DOM 里这一条排在「✕」**前面**，而它是 flex-basis:100%
+   会把整行占满 —— 不重排的话「✕」被挤到第三行去，一行小任务白占两百多像素。
+   假 DOM 看不见排版，这个只有真页面截图才发现得了。 */
+.lks{flex:1 1 100%;order:9;display:flex;flex-wrap:wrap;align-items:center;gap:6px;
   margin-top:3px;padding-left:23px}
 .lks-h{font-size:11.5px;color:var(--text-secondary);flex:0 0 auto}
 /* chip 的配方和上面 .chip 一样（--text-secondary 压 --surface-1，7.7:1），只是小一号 */
@@ -223,7 +249,7 @@ details[open] summary{margin-bottom:11px}
 .pill.warn{color:var(--text-primary);border-color:var(--warning);
   background:color-mix(in srgb, var(--warning) 22%, var(--chip))}
 
-.empty{color:var(--muted);font-size:12.5px;padding:14px 0;text-align:center}
+.empty{color:var(--muted);font-size:12.5px;padding:22px 0;text-align:center;line-height:1.7}
 
 /* 提示条 */
 .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:99;
@@ -250,7 +276,10 @@ details[open] summary{margin-bottom:11px}
 }
 .login-card h1{font-size:22px;margin:14px 0 0}
 .login-card .sub{margin-top:6px}
-.login-card form{text-align:left;margin-top:22px}
+/* 校训和表单之间压一条细线：校训是「引一句话」，不是表单的说明 ——
+   有线在这儿，它才站得住，不然读起来像是副标题下面多了一行。 */
+.login-card form{text-align:left;margin-top:22px;padding-top:22px;
+  border-top:1px solid var(--grid)}
 .login-card .field{margin-top:14px}
 .login-card .field:first-child{margin-top:0}
 .login-foot{margin-top:18px;line-height:1.7}
@@ -287,9 +316,11 @@ details[open] summary{margin-bottom:11px}
 .pc-rows{display:grid;gap:9px}
 .pc-row{display:flex;align-items:baseline;gap:9px;font-size:12.5px}
 .pc-row .k{color:var(--text-secondary);flex:0 0 74px}
-.pc-row .v{font-weight:600;font-variant-numeric:tabular-nums}
+/* 值这一列不许被后面那句长注释挤到换行 —— 「待办 4 / 4 件」被拆成两行很难看，
+   而右边「最急的 9 月 12 日…」本来就该自己折行。 */
+.pc-row .v{font-weight:600;font-variant-numeric:tabular-nums;flex:0 0 auto;white-space:nowrap}
 .pc-row .v small{font-weight:500;color:var(--muted);margin-left:3px}
-.pc-row .q{color:var(--muted);font-size:11.5px}
+.pc-row .q{color:var(--muted);font-size:11.5px;flex:1 1 auto;min-width:0}
 
 /* ── 主页：动态流 ── */
 .feed-item{display:flex;gap:11px;padding:11px 0;border-bottom:1px solid var(--grid)}
@@ -338,7 +369,7 @@ details[open] summary{margin-bottom:11px}
    月行程表：一格一天，深浅 = 那天推进了几件事
    单色由浅到深（sequential），不是彩虹 —— 量的大小只能用一个色相表达
    ══════════════════════════════════════════════════════════════ */
-.mo-wrap{border:1px solid var(--border);border-radius:12px;padding:12px;background:var(--page)}
+.mo-wrap{border:1px solid var(--border);border-radius:12px;padding:14px;background:var(--page)}
 .mo-head,.mo-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
 .mo-head{margin-bottom:6px}
 .mo-head span{font-size:11.5px;font-weight:600;color:var(--muted);text-align:center}

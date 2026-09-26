@@ -61,10 +61,30 @@ const ratio = (f, b) => {
 };
 const fmt = (rgb) => '#' + rgb.map((v) => v.toString(16).padStart(2, '0')).join('');
 
-/* 取自 app.css 的两套主题变量 */
+/* 两套主题的色值**从 app.css 里现读**，不在这里抄一份：
+   抄一份的话改了 app.css、脚本还拿旧值算 —— 2026-09-26 把浅色 --muted 从
+   #898781 压到 #6e6c66 时先踩了一次，脚本报了一串假 FAIL。
+   浅色取 :root{…}（第一段变量块），深色取 :root[data-theme="dark"]{…}
+   （跟媒体查询那段的值是同一套，查一次就够）。 */
+const stripped = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+const varsFrom = (block) => Object.fromEntries(
+  [...block.matchAll(/(--[\w-]+)\s*:\s*(#[0-9a-fA-F]{6})/g)].map((m) => [m[1], m[2].toLowerCase()]));
+const VARS = {
+  浅色: varsFrom((stripped.match(/:root\{([^}]*)\}/) || [, ''])[1]),
+  深色: varsFrom((stripped.match(/:root\[data-theme="dark"\]\{([^}]*)\}/) || [, ''])[1]),
+};
+for (const [mode, V] of Object.entries(VARS)) {
+  if (!V['--muted'] || !V['--page'] || !V['--surface-1'] || !V['--series-1'] || !V['--text-secondary']) {
+    console.error(`❌ 没从 app.css 的${mode}变量块里读出 --muted / --page / --surface-1 / ` +
+      `--series-1 / --text-secondary，变量块或选择器可能被改过`);
+    process.exit(1);
+  }
+}
 const MODES = {
-  浅色: { s1: '#2a78d6', surface: '#fcfcfb', primary: '#0b0b0b', secondary: '#52514e' },
-  深色: { s1: '#3987e5', surface: '#1a1a19', primary: '#ffffff', secondary: '#c3c2b7' },
+  浅色: { s1: VARS.浅色['--series-1'], surface: VARS.浅色['--surface-1'],
+          primary: VARS.浅色['--text-primary'], secondary: VARS.浅色['--text-secondary'] },
+  深色: { s1: VARS.深色['--series-1'], surface: VARS.深色['--surface-1'],
+          primary: VARS.深色['--text-primary'], secondary: VARS.深色['--text-secondary'] },
 };
 
 let bad = 0;
@@ -91,16 +111,8 @@ for (const [mode, M] of Object.entries(MODES)) {
 
 /* ── 除日历外，其它「小字压在底色上」的地方也一起查 ──────────────
    为什么加这一段：浅色模式下 --muted 当文字只有 3.50:1，这个坑已经踩过两次
-   （.chip .cn 一次、.chip.done .ct 一次），都是靠人眼看出来的。
-   颜色 token 从 app.css 里读、不写死在这里 —— 写死的话把 CSS 改坏了脚本还报 PASS。 */
-const VARS = {
-  浅色: { '--surface-1': '#fcfcfb', '--page': '#f9f9f7', '--chip': '#f2f1ed',
-          '--text-primary': '#0b0b0b', '--text-secondary': '#52514e', '--muted': '#898781',
-          '--warning': '#fab219' },
-  深色: { '--surface-1': '#1a1a19', '--page': '#0d0d0d', '--chip': '#242422',
-          '--text-primary': '#ffffff', '--text-secondary': '#c3c2b7', '--muted': '#898781',
-          '--warning': '#fab219' },
-};
+   （.chip .cn 一次、.chip.done .ct 一次），都是靠人眼看出来的。 */
+
 /* [选择器, 它压在哪个底色 token 上, 说明] */
 const TEXT_ON = [
   ['.chip.done .ct', '--surface-1', 'chip 上已勾掉的章节名'],
@@ -113,6 +125,25 @@ const TEXT_ON = [
      每条已关联的 chip 自己铺了一层 --surface-1，按那一层算。 */
   ['.lks-h', '--page', '「↔ 同一件事」那行的小标题'],
   ['.lk', '--surface-1', '已关联的那条 chip'],
+  /* 2026-09-26 把浅色的 --muted 压深之后补的这一组：这些选择器全是拿 --muted
+     当**正文**用的（不是图表刻度那种装饰），原来压在 --page 上只有 3.50:1。
+     同一段文字在卡片里和在页面底色上各查一次 —— 两个底色差一档，只算一种会漏。 */
+  ['.sub', '--surface-1', '卡片副标题'],
+  ['.sub', '--page', '页头那行「邮箱 · 已登录」'],
+  ['.hint', '--surface-1', '表单/按钮下面的说明'],
+  ['.hint', '--page', '挂在页面底色上的说明'],
+  ['.item .m', '--page', '条目底下那行时间 / 来源'],
+  ['.item .m', '--surface-1', '条目（卡片里那种）底下那行时间 / 来源'],
+  ['.empty', '--surface-1', '空态那句「还没有…」'],
+  ['.feed-item .mt', '--surface-1', '动态流每条下面的时间'],
+  ['.pc-row .k', '--page', '主页人物卡的标签列'],
+  ['.pc-row .q', '--page', '主页人物卡后面那句注解'],
+  ['.entry .ed', '--surface-1', '入口卡片的一句说明'],
+  ['.tile .k', '--page', '统计块上面那个小标签'],
+  ['.mo-head span', '--page', '月历的星期表头'],
+  ['.cd-sep', '--page', '倒计时列表里「已完成」那道分隔'],
+  ['.exscore .fs', '--surface-1', '分数右边那行「满分」'],
+  ['.who h3 .badge', '--page', '「我 / 对方」那个小标记'],
 ];
 const noComment = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
 /* 取某个选择器块里 color:var(--x) 的 token 名 */
