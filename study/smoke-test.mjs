@@ -931,6 +931,42 @@ ok(dowOf($('cd-due').value) === 1,
   '点「下周一」给的是周一（算出来星期 ' + dowOf($('cd-due').value) + '）：' + $('cd-due').value);
 ok(gapFromToday($('cd-due').value) >= 1 && gapFromToday($('cd-due').value) <= 7,
   '而且是**下一个**周一（差 ' + gapFromToday($('cd-due').value) + ' 天；今天就是周一的话要给 7 天后）');
+
+/* ── 「今天正好是周一」这一支（2026-09-27 补）──
+   上面那条「下周一」的断言**在非周一跑时是恒真的**：今天不是周一 → nextDow 里
+   `if (!delta && skipToday)` 那个分支根本走不到，把 nextDow(1, true) 改成
+   nextDow(1, false) 照样绿。2026-09-27 的变异检验 K3 实测漏网，就是栽在这儿
+   —— 今天（周日）跑一万遍也测不出「周一那天不给今天」。
+   唯一能在测试里钉住「今天」的办法是临时换掉 Date，跟测试台换 Blob 是同一个套路。
+   固定到正午，避开时区边界；用完在 finally 里还回去，否则后面所有用例的日期都变了。 */
+async function withToday(iso, fn) {
+  const Real = globalThis.Date;
+  const fixed = new Real(iso + 'T12:00:00');
+  class FakeDate extends Real {
+    constructor(...a) { if (a.length === 0) super(fixed.getTime()); else super(...a); }
+    static now() { return fixed.getTime(); }
+  }
+  globalThis.Date = FakeDate;
+  try { return await fn(); } finally { globalThis.Date = Real; }
+}
+
+await withToday('2026-10-05', async () => {          // 2026-10-05 是周一
+  ok(dowOf('2026-10-05') === 1, '前提：2026-10-05 这天确实是周一（按日历算出来的）');
+  ok(isoOff(0) === '2026-10-05', '前提：「今天」已经被钉在 2026-10-05：' + isoOff(0));
+  $('cd-due').value = '';
+  $('cd-nextmon').fire('click'); await tick();
+  ok($('cd-due').value === '2026-10-12' && dowOf($('cd-due').value) === 1 &&
+     gapFromToday($('cd-due').value) === 7,
+    '今天就是周一时，「下周一」要给 7 天后的 10-12，**不能给今天**：' + $('cd-due').value);
+  $('cd-weekend').fire('click'); await tick();
+  ok($('cd-due').value === '2026-10-10' && dowOf($('cd-due').value) === 6,
+    '今天就是周一时，「本周末」给本周六 10-10（今天算本周）：' + $('cd-due').value);
+  $('cd-today').fire('click'); await tick();
+  ok($('cd-due').value === '2026-10-05', '「今天」仍然是今天，不受影响：' + $('cd-due').value);
+  $('cd-tomorrow').fire('click'); await tick();
+  ok($('cd-due').value === '2026-10-06', '「明天」也照旧是明天：' + $('cd-due').value);
+});
+ok(isoOff(0) !== '2026-10-05', '出块之后「今天」还回来了（没把 Date 永久换掉）：' + isoOff(0));
 /* 快捷按钮只管填值，不写库 —— 没点「加上」之前不该多出任何一行 */
 ok(!DB.goals.some((g) => g.due_date === $('cd-due').value && !g.title),
   '点快捷按钮只填日期框，不会凭空写一行进库');
