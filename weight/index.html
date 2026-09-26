@@ -222,6 +222,53 @@ code{font-size:12px;background:var(--chip);padding:1px 5px;border-radius:5px}
     <p class="hint">打卡只做记录，不扣分、不罚款 —— 惩罚只由下面两个模块产生。</p>
   </div>
 
+  <!-- ── 饮食 / 运动 / 睡眠 ──
+       三项都跟着上面「今日录入」那个日期走：它们是**每日**记录，跟体重同频。
+       围度之所以单独一个日期框，是因为她要求「每周一次即可，不用跟体重同步」。 -->
+  <div class="card">
+    <h2>饮食 / 运动 / 睡眠 <span class="pill" id="hb-pill"></span></h2>
+    <p class="hint" style="margin-top:0">
+      跟着上面「今日录入」的日期走。三项都可以空着 —— <b>空 = 没记，不是 0</b>。
+      这一块只做记录，不参与任何惩罚判定。
+    </p>
+
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1;min-width:170px">
+        <label class="f" for="hb-food">吃了什么</label>
+        <input type="text" id="hb-food" placeholder="一碗牛肉面 / 一杯拿铁">
+      </div>
+      <div>
+        <label class="f" for="hb-kcal">大约千卡</label>
+        <input type="number" id="hb-kcal" step="10" min="0" max="5000" placeholder="600">
+      </div>
+      <button id="hb-add-meal">加一条</button>
+    </div>
+    <p class="hint" style="margin-top:4px">千卡那格可以留空 —— 不知道热量就先只记吃了什么，不会记成 0 分。</p>
+
+    <div class="row" style="margin-top:12px">
+      <div style="flex:1;min-width:170px">
+        <label class="f" for="hb-ex">运动类型</label>
+        <input type="text" id="hb-ex" placeholder="快走 / 力量 / 游泳">
+      </div>
+      <div>
+        <label class="f" for="hb-min">时长（分钟）</label>
+        <input type="number" id="hb-min" step="5" min="1" max="600" placeholder="40">
+      </div>
+      <button id="hb-add-ex">加一条</button>
+    </div>
+
+    <div class="row" style="margin-top:12px">
+      <div>
+        <label class="f" for="hb-sleep">睡眠（小时）</label>
+        <input type="number" id="hb-sleep" step="0.5" min="0" max="24" placeholder="7.5">
+      </div>
+      <button id="hb-save-sleep">记下</button>
+      <span class="hint" style="margin:0" id="hb-sleep-hint"></span>
+    </div>
+
+    <div id="hb-body" style="margin-top:14px"></div>
+  </div>
+
   <!-- ── 结算 ── -->
   <div class="card">
     <h2>周结算</h2>
@@ -558,8 +605,11 @@ function renderTiles(){
   var e = entryOf(t);
 
   var html = '';
+  // 判空看的是**体重**不是「这一天有没有 entries」（2026-09-27 改）：只记了饮食 /
+  // 运动 / 睡眠的那天 e 也存在，原来那句 e ? '' : '今天还没记录' 会显示成空白子标题，
+  // 看着像当天已经称过了。连续记录 / 缺记录的判定本来就只认体重，这里跟它们对齐。
   html += tile('今日体重', w === null ? '—' : w.toFixed(2), 'kg',
-               e && e.frozen ? '<span class="frozen">已冻结：'+(e.freezeReason||'未填原因')+'</span>' : (e ? '' : '今天还没记录'));
+               e && e.frozen ? '<span class="frozen">已冻结：'+(e.freezeReason||'未填原因')+'</span>' : (w === null ? '今天还没记录' : ''));
   html += tile('7 日均线', ma === null ? '—' : ma.toFixed(2), 'kg', '看趋势，别看单日');
 
   var deltaTxt = '—', deltaSub = '需要两个 7 天窗口的数据';
@@ -989,6 +1039,112 @@ function renderMeasure(){
   });
 }
 
+/* ── 渲染：饮食 / 运动 / 睡眠 ───────────────────────────────────────────
+   三样都是可选列。她 2026-09-27 的两条口径写死在这里：
+     ·「缺失日期留空，不要填 0（会毁掉平均值）」—— 空就是 null，绝不落 0；
+       小计只把**真填了的**加进去，并说清有几条没填。一条都没填 = 「—」。
+     · 这一块**不参与任何惩罚判定**：missStreak() / recordStreak() 仍然只认体重，
+       记一顿饭顶不了那天的体重记录，否则「连续未记录」那条罚款就漏了。
+   数据挂在 entries[date] 里（跟体重同一个对象）—— 导出 / 导入自动带上，
+   老数据没有这三个字段 = 读到空，**不需要任何迁移**。 */
+function habitsOf(d){
+  var e = state.entries[d];
+  if(!e) return { meals:[], exercises:[], sleep:null };
+  return {
+    meals:     Array.isArray(e.meals)     ? e.meals     : [],
+    exercises: Array.isArray(e.exercises) ? e.exercises : [],
+    sleep:     (typeof e.sleep === 'number' && isFinite(e.sleep)) ? e.sleep : null
+  };
+}
+// 现有代码里到处写 state.entries[d] || (state.entries[d] = {})，新代码用这个，不回头改旧的
+function entryFor(d){ return state.entries[d] || (state.entries[d] = {}); }
+
+function renderHabits(){
+  var d = document.getElementById('in-date').value || today();
+  var h = habitsOf(d);
+  document.getElementById('hb-pill').textContent = fmtDate(d);
+
+  var sh = document.getElementById('hb-sleep-hint');
+  sh.textContent = h.sleep === null ? '' : '这一天已记 ' + h.sleep + ' 小时，再记一次会覆盖。';
+  document.getElementById('hb-sleep').value = h.sleep === null ? '' : h.sleep;
+
+  var box = document.getElementById('hb-body');
+  box.innerHTML = '';
+  if(!h.meals.length && !h.exercises.length && h.sleep === null){
+    box.innerHTML = '<div class="empty">这一天还没记饮食 / 运动 / 睡眠。三项都可以空着。</div>';
+    return;
+  }
+
+  var kcal = 0, kcalMiss = 0;
+  h.meals.forEach(function(m){
+    if(typeof m.kcal === 'number' && isFinite(m.kcal)) kcal += m.kcal; else kcalMiss++;
+  });
+  var mins = 0, minMiss = 0;
+  h.exercises.forEach(function(x){
+    if(typeof x.min === 'number' && isFinite(x.min)) mins += x.min; else minMiss++;
+  });
+
+  var wrap = document.createElement('div'); wrap.className = 'tblwrap';
+  var tb = document.createElement('table');
+  tb.innerHTML = '<thead><tr><th>项目</th><th>内容</th><th class="num">小计</th><th></th></tr></thead>';
+  var tbody = document.createElement('tbody');
+
+  function row(label, content, total, onDelete){
+    var tr = document.createElement('tr');
+    function td(txt, cls){
+      var c = document.createElement('td'); if(cls) c.className = cls;
+      c.textContent = txt; tr.appendChild(c); return c;
+    }
+    td(label); td(content); td(total, 'num');
+    var act = document.createElement('td');
+    if(onDelete){
+      var b = document.createElement('button');
+      b.className = 'tiny'; b.textContent = '删';
+      b.addEventListener('click', onDelete);
+      act.appendChild(b);
+    }
+    tr.appendChild(act);
+    tbody.appendChild(tr);
+  }
+  // 小计只在每组第一行显示；一条都没填热量就是「—」，不是 0
+  function sumText(filled, total, unit, miss){
+    if(!filled) return '—';
+    return total + ' ' + unit + (miss ? '（另有 ' + miss + ' 条没填）' : '');
+  }
+
+  h.meals.forEach(function(m, i){
+    row(i === 0 ? '饮食' : '',
+        m.name + (typeof m.kcal === 'number' && isFinite(m.kcal) ? ' · ' + m.kcal + ' 千卡' : ' · 未填热量'),
+        i === 0 ? sumText(h.meals.length - kcalMiss, kcal, '千卡', kcalMiss) : '',
+        function(){
+          if(!confirm('删掉「' + m.name + '」这一条？')) return;
+          h.meals.splice(i, 1);
+          save(); renderAll();
+        });
+  });
+  h.exercises.forEach(function(x, i){
+    row(i === 0 ? '运动' : '',
+        x.type + (typeof x.min === 'number' && isFinite(x.min) ? ' · ' + x.min + ' 分钟' : ' · 未填时长'),
+        i === 0 ? sumText(h.exercises.length - minMiss, mins, '分钟', minMiss) : '',
+        function(){
+          if(!confirm('删掉「' + x.type + '」这一条？')) return;
+          h.exercises.splice(i, 1);
+          save(); renderAll();
+        });
+  });
+  if(h.sleep !== null){
+    row('睡眠', h.sleep + ' 小时', '', function(){
+      if(!confirm('删掉 ' + fmtDate(d) + ' 的睡眠记录？')) return;
+      delete state.entries[d].sleep;
+      save(); renderAll();
+    });
+  }
+
+  tb.appendChild(tbody);
+  wrap.appendChild(tb);
+  box.appendChild(wrap);
+}
+
 /* ── 渲染：结算区 ─────────────────────────────────────────────────────── */
 var lastSettlement = null;
 
@@ -1101,6 +1257,7 @@ function renderAll(){
   renderChart();
   renderEntry();
   renderTasks();
+  renderHabits();
   renderLedger();
   renderMeasure();
   renderSettle();
@@ -1110,7 +1267,7 @@ function renderAll(){
 /* ── 事件 ─────────────────────────────────────────────────────────────── */
 function bind(){
   document.getElementById('in-date').addEventListener('change', function(){
-    renderEntry(); renderTasks();
+    renderEntry(); renderTasks(); renderHabits();
   });
 
   document.getElementById('btn-save').addEventListener('click', function(){
@@ -1197,6 +1354,70 @@ function bind(){
     state.measurements = state.measurements.filter(function(x){ return x.date !== d; });
     state.measurements.push(m);
     ['m-waist','m-hip','m-thigh','m-fat'].forEach(function(id){ document.getElementById(id).value = ''; });
+    save(); renderAll();
+  });
+
+  /* ── 饮食 / 运动 / 睡眠 ──
+     三条口径：
+       · 食物名必填，**千卡可以留空** —— 不知道热量就先只记吃了什么，空着不等于 0；
+       · 运动类型和时长都要（记运动不记时长没意义）；
+       · 睡眠框空着再点「记下」= 撤销这一天的睡眠记录。
+     日期校验跟体重那条完全一致（不录未来、只补 14 天内）—— 同一个日期框，
+     不能出现「体重存不进去、饮食却存进去了」这种怪状态。 */
+  document.getElementById('hb-add-meal').addEventListener('click', function(){
+    var d = document.getElementById('in-date').value || today();
+    if(d > today()){ alert('不能录未来的日期。'); return; }
+    if(daysBetween(d, today()) > 14){ alert('只能补录最近 14 天内的记录。'); return; }
+    var name = document.getElementById('hb-food').value.trim();
+    if(!name){ alert('先写吃了什么。'); document.getElementById('hb-food').focus(); return; }
+    var raw = document.getElementById('hb-kcal').value, kcal = null;
+    if(raw !== ''){
+      var k = parseFloat(raw);
+      if(!isFinite(k) || k < 0 || k > 5000){ alert('千卡数看起来不对（允许 0–5000）。'); return; }
+      kcal = Math.round(k);
+    }
+    var ent = entryFor(d);
+    ent.meals = ent.meals || [];
+    ent.meals.push({ name: name, kcal: kcal });
+    document.getElementById('hb-food').value = '';
+    document.getElementById('hb-kcal').value = '';
+    save(); renderAll();
+    document.getElementById('hb-food').focus();     // 连着记几条不用去够鼠标
+  });
+
+  document.getElementById('hb-add-ex').addEventListener('click', function(){
+    var d = document.getElementById('in-date').value || today();
+    if(d > today()){ alert('不能录未来的日期。'); return; }
+    if(daysBetween(d, today()) > 14){ alert('只能补录最近 14 天内的记录。'); return; }
+    var type = document.getElementById('hb-ex').value.trim();
+    if(!type){ alert('先写运动类型。'); document.getElementById('hb-ex').focus(); return; }
+    var raw = document.getElementById('hb-min').value;
+    if(raw === ''){ alert('再填一下时长（分钟）。'); document.getElementById('hb-min').focus(); return; }
+    var m = parseFloat(raw);
+    if(!isFinite(m) || m <= 0 || m > 600){ alert('时长看起来不对（允许 1–600 分钟）。'); return; }
+    var ent = entryFor(d);
+    ent.exercises = ent.exercises || [];
+    ent.exercises.push({ type: type, min: Math.round(m) });
+    document.getElementById('hb-ex').value = '';
+    document.getElementById('hb-min').value = '';
+    save(); renderAll();
+    document.getElementById('hb-ex').focus();
+  });
+
+  document.getElementById('hb-save-sleep').addEventListener('click', function(){
+    var d = document.getElementById('in-date').value || today();
+    if(d > today()){ alert('不能录未来的日期。'); return; }
+    if(daysBetween(d, today()) > 14){ alert('只能补录最近 14 天内的记录。'); return; }
+    var raw = document.getElementById('hb-sleep').value;
+    if(raw === ''){                                  // 空着点「记下」= 撤销
+      if(!state.entries[d] || state.entries[d].sleep === undefined) return;
+      if(!confirm('清掉 ' + fmtDate(d) + ' 的睡眠记录？')) return;
+      delete state.entries[d].sleep;
+      save(); renderAll(); return;
+    }
+    var h = parseFloat(raw);
+    if(!isFinite(h) || h < 0 || h > 24){ alert('小时数看起来不对（允许 0–24）。'); return; }
+    entryFor(d).sleep = Math.round(h*10)/10;
     save(); renderAll();
   });
 
