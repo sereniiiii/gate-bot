@@ -842,16 +842,121 @@ ok($('done-tip').textContent.includes('分章'), '顺手指路：' + $('done-tip
 DB.subtasks.push(...keepCh);
 $('btn-refresh').fire('click'); await tick();
 
-console.log('── 自由文本框整块去掉了（回车 / 输入法那套跟着删）──');
+console.log('── 「自己写两句」：文本框回来了，但不再凭空造小任务 ──');
 tabs[3].fire('click'); await tick();
-/* 以前是「写一条 → 回车提交」，还专门挡过中文输入法选词时的回车。
-   现在两种模式都是「选父项 → 选其中一条」，没有文本框，那套逻辑一起删干净了。 */
+/* 以前那个自由文本框是「写一条 → 凭空新建一条已完成的小任务」，会越记越长、还替她
+   宣布完成，所以删过一轮。现在回来的是**只存文字**的那种：不勾任何东西也能按，
+   落在当天的 daily_logs.note 上，一根进度条都不动。 */
+const dayHtml = fs.readFileSync(path.join(DIR, 'index.html'), 'utf8');
+ok(/<textarea id="done-note"/.test(dayHtml),
+  'index.html 里确实有这个框（假 DOM 认不出静态结构，只能查源码）');
+ok(/for="done-note"/.test(dayHtml), '有配对的 label');
+ok(/id="done-note"[^>]*rows=/.test(dayHtml), '是多行的 textarea，不是单行 input');
+
 await laneOff('线性代数应该这样学');         // 只留大任务那组
 await laneOn('学完线性代数');
 ok($('done-btn').textContent.includes('只记一笔'), '切回大任务模式，按钮仍是「只记一笔」：' + $('done-btn').textContent);
 ok($('done-picker').textContent.includes('哪一步'), '「哪一步」那一组在');
 ok($('done-tip').textContent.includes('大任务拆解'),
   '提示明确告诉她真完成要去哪里勾：' + $('done-tip').textContent);
+
+/* 光写字、一条都不勾 —— 也该能存下，而且不能多出小任务 */
+const T = new Date();
+const pad2 = (n) => String(n).padStart(2, '0');
+const TODAY = T.getFullYear() + '-' + pad2(T.getMonth() + 1) + '-' + pad2(T.getDate());
+const myToday = () => DB.daily_logs.filter((x) => x.owner === ME && x.log_date === TODAY);
+const notesOf = () => DB.daily_logs.filter((x) => x.owner === ME && x.log_date === TODAY && x.note);
+
+ok(myToday().length === 0, '起点干净：这天还没有日记行（下面几条断言才有意义）');
+/* 只勾一条、一个字没写 → 不该凭空造出一行空的日记。
+   必须落在**「哪一步」那一组**的 chip 上：大任务那一组的 chip 也长这样，
+   点它只会开关整组，那样按下去 plan 是空的、断言就成了空转。
+   前面几段可能已经把每一步都勾掉了，先按回未完成，否则这一下会被 blocked 掉。 */
+const victim = DB.subtasks.find((x) => x.owner === ME && x.title === '习题课');
+victim.done = false; victim.done_at = null;
+$('btn-refresh').fire('click'); await tick();
+tabs[3].fire('click'); await tick();
+await laneOn('学完线性代数');
+const stepGrp2 = byCls($('done-picker'), 'chips-group').find((g) => g.textContent.includes('哪一步'));
+const undoneChip = byCls(stepGrp2 || $('done-picker'), 'chip').find((c) => c.textContent.includes('习题课'));
+if (undoneChip) { undoneChip.fire('click'); await tick(); }
+ok(!!undoneChip && $('done-btn').textContent.includes('只记一笔'),
+  '挑到一个没做过的步骤来测（挑不到的话这一下会被 blocked 掉，断言就空转了）：' +
+  $('done-btn').textContent);
+$('done-btn').fire('click'); await tick(); await tick();
+ok(myToday().length === 0, '只勾了一条、没写字 → 不多出一行空的日记');
+ok(!!victim.done_at && victim.done === false,
+  '这一条确实盖上了推进戳（证明上面按的按钮真干了活，断言不是空转）：' + victim.done_at);
+
+await laneOff('学完线性代数');
+$('done-note').value = '今天只读了两页，卡在特征值';
+$('done-note').fire('input'); await tick();
+ok($('done-btn').disabled === false, '一个字都没勾、只写了字，按钮也是可用的');
+ok($('done-btn').textContent.includes('只记这段文字'), '按钮上写清这一下只存文字：' + $('done-btn').textContent);
+
+const nSub = DB.subtasks.length;
+$('done-btn').fire('click'); await tick(); await tick();
+ok(DB.subtasks.length === nSub, '没有凭空多出一条小任务（上次删掉那个文本框就是栽在这）');
+ok(notesOf().length === 1 && notesOf()[0].note === '今天只读了两页，卡在特征值',
+  '文字落进了当天的 daily_logs.note');
+ok(!(myToday()[0] || {}).mood && !(myToday()[0] || {}).difficulty,
+  '没顺手把 mood / difficulty 抹掉 —— 那两个是折叠区管的，这里不该碰');
+
+/* 有勾选 + 有文字 → 一次按钮两样都记，按钮上要写出来 */
+await laneOn('学完线性代数');
+$('done-note').value = '今天顺手记一笔';
+$('done-note').fire('input'); await tick();
+ok($('done-btn').textContent.includes('连文字一起存'),
+  '勾了东西又写了字，按钮上两样都说清：' + $('done-btn').textContent);
+$('done-btn').fire('click'); await tick(); await tick();
+ok(notesOf().length === 1 && notesOf()[0].note === '今天顺手记一笔',
+  '同一天只留一行，是改不是新加（upsert 到 owner+log_date）');
+
+/* 今天本来就已经有一条带心情/困难的日记时，只写字不能把它们抹掉。
+   上面那条断言测的是「新建那一行」，mood 本来就是空的 —— 单靠它测不出这个。
+   先把今天清空到只剩这一条，否则 app 会去改更早的那一行，断言就落空了。 */
+DB.daily_logs
+  .filter((x) => x.owner === ME && x.log_date === TODAY)
+  .forEach((x) => DB.daily_logs.splice(DB.daily_logs.indexOf(x), 1));
+DB.daily_logs.push({
+  id: 'dx', owner: ME, log_date: TODAY, mood: 3,
+  difficulty: '卡在特征值', note: '', created_at: new Date().toISOString(),
+});
+$('btn-refresh').fire('click'); await tick();
+tabs[3].fire('click'); await tick();
+await laneOff('学完线性代数');                       // 只写字，不勾任何东西
+$('done-note').value = '只写这一行';
+$('done-note').fire('input'); await tick();
+$('done-btn').fire('click'); await tick(); await tick();
+const row2 = myToday()[0] || {};
+ok(row2.mood === 3 && row2.difficulty === '卡在特征值',
+  '今天原本就有心情/困难，只写文字不会把它们抹掉：mood=' + row2.mood + ' 困难=' + row2.difficulty);
+await laneOn('学完线性代数');
+
+/* 打开页面时显示库里今天那一条；还没保存的字不能被刷新盖掉。
+   dx 就是今天仅剩的那一行（上面清过、只留它），直接改它。 */
+DB.daily_logs.find((x) => x.id === 'dx').note = '库里改过的字';
+$('btn-refresh').fire('click'); await tick();
+tabs[3].fire('click'); await tick();
+ok($('done-note').value === '库里改过的字', '刚打开时框里是今天已存的那份：' + $('done-note').value);
+$('done-note').value = '还没保存的一行';
+$('done-note').fire('input'); await tick();
+$('btn-refresh').fire('click'); await tick();
+tabs[3].fire('click'); await tick();
+ok($('done-note').value === '还没保存的一行',
+  '还没保存的字，刷一次 / 切个页签不会被库里的旧值盖掉：' + $('done-note').value);
+
+/* 折叠区挑的正好是今天时，两个框说的是同一条记录，保存要以「自己写两句」为准 */
+ok(/d === today\(\) \? \$\('done-note'\)\.value/.test(fs.readFileSync(path.join(DIR, 'app.js'), 'utf8')),
+  '折叠区保存今天那条时读的是同一个框，不会拿旧值反过来盖掉');
+
+/* 收尾：这一段往今天的 daily_logs 里造过行，后面「兜底」「导出」都按原来的数据算，
+   留着会把「今天已经记过」带进后面的用例。全删掉 + 清空框，恢复原状。 */
+DB.daily_logs
+  .filter((x) => x.owner === ME && x.log_date === TODAY)
+  .forEach((x) => DB.daily_logs.splice(DB.daily_logs.indexOf(x), 1));
+$('done-note').value = '';                 // 直接清，不走 input：touched 保持 true，prefill 不会又填回来
+await tick();
 
 console.log('── 心情与困难：没被删掉，退到折叠区 ──');
 ok($('d-moods').children.length === 5, '心情 5 档按钮还在');

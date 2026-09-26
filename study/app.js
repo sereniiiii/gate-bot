@@ -50,6 +50,11 @@
     doneOn:  { task: true, res: false },
     doneRef: { task: null, res: null },
     doneSub: { task: null, res: null },
+    /* 「自己写两句」那个文本框跟着**今天**这一天走，存在 daily_logs.note 里
+       （和折叠区那条「补充」是同一个字段，没有新表）。noteDay = 框里现在装的是
+       哪一天的文字；noteTouched = 她动过手之后，别拿库里的旧值把正在打的字盖掉。 */
+    noteDay: null,
+    noteTouched: false,
     resScope: 'all',      // all | me | other
     feedKind: 'all',      // all | done | log | res
     noDoneAt: false,      // 库里还没加 done_at 列时置位（setup-3-feed.sql 跑之前）
@@ -928,6 +933,9 @@
      用 chip 而不是下拉：通常就几个，一眼看全比展开菜单快。
      右侧 n/m 是这个父下面已经完成几件 —— 挑的时候不用来回翻页。
      再点一下已经选中的那个 = **这一组这次不记**（整组变回 ☐）—— 只做了一件事时用。 */
+  /* 「自己写两句」那个框里现在有什么（还没存进库的也算） */
+  const noteText = () => { const el = $('done-note'); return el ? el.value.trim() : ''; };
+
   function renderDoneForm() {
     const box = $('done-picker');
     const btn = $('done-btn');
@@ -940,6 +948,15 @@
       ['task', '大任务', S.tasks.filter(isMine), subsOfTask],
       ['res', '学习资源', S.resources.filter(isMine), subsOfRes],
     ].filter((l) => l[2].length);
+
+    /* 什么都没得挂时，只要她写了字，这个按钮也应该是能按的 —— 光想记两句话
+       不该被拦下来。没写字就保持原样，催她去建东西。 */
+    if (!lanes.length && noteText()) {
+      btn.disabled = false;
+      btn.textContent = '只记这段文字（今天）';
+      tip.textContent = '就存这段字，不动任何进度条；等你建了大任务或资源，再回来勾。';
+      return;
+    }
 
     if (!lanes.length) {
       /* 什么都没得挂 —— 整块退回最开始的样子，以后建了东西回来就是默认状态 */
@@ -1037,16 +1054,25 @@
 
     plabel.textContent = '这次要记什么（两组可以同时选）';
     lead.textContent = '两组可以只选一组，也可以各选一条同时记 —— 都选就一次记完。' +
-      '大任务那一步只记一笔「今天推进了」，不算完成；资源那一章勾掉就算完成。';
+      '大任务那一步只记一笔「今天推进了」，不算完成；资源那一章勾掉就算完成。' +
+      '下面那个文本框是写给自己看的，跟同一笔记一起存。';
 
     if (!plan.length) {
-      btn.disabled = true;
       if (stuck.length) {
         const isRes = stuck[0] === 'res';
-        btn.textContent = isRes ? '这本书还没分章' : '这个大任务还没拆步';
-        tip.textContent = isRes ? '先去「学习资源」里给它「＋ 分章」'
-                                : '先去「大任务拆解」把它拆成几步，再回来记推进';
+        const has = !!noteText();
+        btn.disabled = !has;
+        btn.textContent = has ? '只记这段文字（今天）'
+          : isRes ? '这本书还没分章' : '这个大任务还没拆步';
+        tip.textContent = (isRes ? '先去「学习资源」里给它「＋ 分章」'
+                                 : '先去「大任务拆解」把它拆成几步，再回来记推进') +
+          (has ? ' —— 现在按下去只存文字' : '');
+      } else if (noteText()) {
+        btn.disabled = false;
+        btn.textContent = '只记这段文字（今天）';
+        tip.textContent = '就存这段字，不动任何进度条。想顺手勾一条，点上面的大任务或学习资源';
       } else {
+        btn.disabled = true;
         btn.textContent = '先选一样要记的';
         tip.textContent = '点上面的大任务或学习资源 —— 再点一下选中的那个，就是这组这次不记';
       }
@@ -1055,9 +1081,10 @@
 
     btn.disabled = false;
     const both = plan.length === 2;
-    btn.textContent = both ? '两样一起记：推进这一步 + 勾掉这一章'
+    const plusNote = noteText() ? '（连文字一起存）' : '';
+    btn.textContent = (both ? '两样一起记：推进这一步 + 勾掉这一章'
       : plan[0] === 'res' ? '勾掉这一章（算完成）'
-      : '只记一笔：今天推进了这一步';
+      : '只记一笔：今天推进了这一步') + plusNote;
     tip.textContent = both
       ? '大任务那一步只记一笔推进（还不算完成）；这一章勾掉就算完成'
       : plan[0] === 'res'
@@ -1132,7 +1159,8 @@
     const btn = $('done-btn');
     const jobs = [];      // 这次要记的
     const blocked = [];   // 勾了但记不了的（已经完成过），拿第一条告诉她
-
+    const t = today();
+    const note = noteText();   // 「自己写两句」那个框，跟这一笔记一起存
     if (S.doneOn.task) {
       const task = S.tasks.find((x) => x.id === S.doneRef.task && isMine(x));
       const step = task ? subsOfTask(task.id).find((x) => x.id === S.doneSub.task) : null;
@@ -1149,8 +1177,9 @@
       else jobs.push({ kind: 'res', res: r, sub: ch });
     }
 
-    if (!jobs.length) {
-      toast(blocked.length ? blocked[0] : '先在上面选一样要记的', true);
+    /* 光写字、什么都没勾也是合法的一次记录 —— 只存文字，不动任何进度条 */
+    if (!jobs.length && !note) {
+      toast(blocked.length ? blocked[0] : '先在上面选一样要记的，或者写两句也行', true);
       return;
     }
 
@@ -1165,17 +1194,37 @@
         return;
       }
     }
+
+    /* 文字落在 daily_logs.note（今天那一行），和折叠区那条「补充」是同一个字段。
+       只写 note、不带上 mood / difficulty —— 那两个是折叠区管的，不该被这里悄悄清掉。
+       内容没变就不写：免得一次「只勾不做笔记」凭空多出一行空日记。 */
+    const cur = S.daily.find((x) => isMine(x) && x.log_date === t);
+    const curNote = cur ? (cur.note || '') : '';
+    let noteSaved = false;
+    if (note !== curNote) {
+      const { error } = await sb.from('daily_logs')
+        .upsert({ owner: S.me.id, log_date: t, note: note }, { onConflict: 'owner,log_date' });
+      if (error) {
+        btn.disabled = false;
+        toast('勾选记上了，但那两句话没存下：' + error.message, true);
+        await refresh();
+        return;
+      }
+      noteSaved = true;
+    }
     btn.disabled = false;
 
     const said = jobs.map((j) => j.kind === 'res'
       ? '勾掉了「' + (j.sub.title || '这一章') + '」'
       : '今天推进了「' + (j.sub.title || '这一步') + '」');
+    if (noteSaved) said.push('存下了你写的两句话');
     const hasStep = jobs.some((j) => j.kind === 'task');
     const tied = jobs.filter((j) => linkedTo(j.sub)).length;
-    toast('记下了：' + said.join('，') + '。' +
+    toast((jobs.length ? '记下了：' + said.join('，') + '。' : '存下了。') +
       (hasStep ? '大任务那一步还没算完成 —— 真做完了去「大任务拆解」勾上它。' : '') +
       (tied ? '它绑着的另一半也跟着变了。' : '') +
       (blocked.length ? '（' + blocked[0] + '）' : ''));
+    S.noteTouched = false;   // 存过了，之后 refresh 再用库里的值对齐
     await refresh();
   }
 
@@ -1227,10 +1276,18 @@
   function prefillDay() {
     const d = $('d-date').value || today();
     const row = S.daily.find((x) => isMine(x) && x.log_date === d);
+    const note = row ? (row.note || '') : '';
     setMood(row ? row.mood : null);
     $('d-diff').value = row ? (row.difficulty || '') : '';
-    $('d-note').value = row ? (row.note || '') : '';
+    $('d-note').value = note;
     $('d-status').textContent = row ? '这一天已记过，保存会覆盖。' : '这一天还没记。';
+    /* 折叠区挑的正好是今天时，上面那个「自己写两句」说的是同一个字段 ——
+       顺手对齐，免得两个框显示的字不一样、一保存互相盖掉。
+       但她正在打的字不能盖：没动过手才拿库里的值对齐。 */
+    if (d === today() && !S.noteTouched) {
+      S.noteDay = d;
+      $('done-note').value = note;
+    }
   }
 
   /* ── 页签四：学习资源 ──────────────────────────────────────── */
@@ -1792,17 +1849,29 @@
       await refresh();
     });
 
-    /* 今日完成情况：只有一个按钮了（没有文本框，回车提交那套跟着去掉） */
+    /* 今日完成情况：勾选 + 一个自己写两句的文本框，同一个按钮一起存。
+       框里没字、也没勾任何东西时按钮是灰的，所以这里不用再拦回车 ——
+       但输入法还没上屏时按回车不该当成提交（老坑，别再踩）。 */
     $('done-btn').addEventListener('click', addDone);
+    const onNoteInput = (e) => {
+      if (e && e.isComposing) return;
+      S.noteTouched = true;
+      renderDoneForm();     // 只为了按钮的可用状态和文案跟着变；不碰这个框本身
+    };
+    $('done-note').addEventListener('input', onNoteInput);
+    $('done-note').addEventListener('change', onNoteInput);
 
     $('d-date').addEventListener('change', prefillDay);
     $('d-save').addEventListener('click', async () => {
       const d = $('d-date').value || today();
       const btn = $('d-save');
       btn.disabled = true;
+      /* 折叠区挑的是今天时，上面「自己写两句」才是在说同一条记录 —— 以那边为准，
+         否则会出现「在 A 框写的字，按 B 的保存被旧值盖掉」。 */
+      const noteVal = (d === today() ? $('done-note').value : $('d-note').value).trim();
       const { error } = await sb.from('daily_logs').upsert({
         owner: S.me.id, log_date: d, mood: S.mood,
-        difficulty: $('d-diff').value.trim(), note: $('d-note').value.trim(),
+        difficulty: $('d-diff').value.trim(), note: noteVal,
       }, { onConflict: 'owner,log_date' });
       btn.disabled = false;
       if (error) { toast(error.message, true); return; }

@@ -162,10 +162,15 @@
       <p class="hint" style="margin-top:0" id="done-lead">
         两组可以只选一组，也可以各选一条同时记 —— 都选就一次记完。
         大任务那一步只记一笔「今天推进了」，不算完成；资源那一章勾掉就算完成。
+        下面的文本框是写给自己看的，跟同一笔记一起存。
       </p>
       <div class="field" style="margin-top:12px">
         <label class="f" id="done-picker-label">这次要记什么（两组可以同时选）</label>
         <div id="done-picker"></div>
+      </div>
+      <div class="field" style="margin-top:12px">
+        <label class="f" for="done-note">自己写两句（可选，跟着「今天」这一天存）</label>
+        <textarea id="done-note" rows="2" placeholder="今天还做了什么、卡在哪、明天接着做什么…"></textarea>
       </div>
       <div class="row tight" style="margin-top:14px">
         <button class="primary" id="done-btn">先选一样要记的</button>
@@ -196,7 +201,7 @@
           <textarea id="d-diff" rows="2" placeholder="卡在哪了？"></textarea>
         </div>
         <div class="field" style="margin-top:8px">
-          <label class="f" for="d-note">补充（可选）</label>
+          <label class="f" for="d-note">补充（可选，存给上面选的那一天）</label>
           <input type="text" id="d-note" placeholder="想记的别的">
         </div>
         <div class="row tight" style="margin-top:12px">
