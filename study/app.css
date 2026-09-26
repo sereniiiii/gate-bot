@@ -154,6 +154,29 @@ button:focus-visible,summary:focus-visible,.tab:focus-visible,.chip:focus-visibl
 .item .d{font-size:12px;color:var(--text-secondary);margin-top:3px;word-break:break-word}
 .item .m{font-size:11.5px;color:var(--muted);margin-top:5px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .item .acts{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+/* ── 学习资源列表：「学科 → 类型」两层分组（2026-09-26）────────────
+   资源攒到十几本之后平铺着找不动，分两层之后一眼看得出哪一科堆了多少。
+   组头**不铺底色** —— 一栏里可能有好几个学科，每层都铺上颜色会变成一条条
+   色带，反而更花；靠间距 + 一条细分隔线把层级拉开就够了。 */
+.res-group{margin-bottom:15px}
+.res-group:last-child{margin-bottom:0}
+.rg-head{display:flex;align-items:baseline;gap:7px;margin:0 0 9px;
+  padding-bottom:5px;border-bottom:1px solid var(--border)}
+.rg-head .rg-name{font-weight:700;font-size:12.5px;color:var(--text-primary)}
+.rg-head .rg-n{font-size:11px;color:var(--muted);margin-left:auto}
+/* 类型子分组：色点 + 名字 + 个数。三个色点跟上面那张宏观图是**同一套**
+   （--series-1/2/3），图和列表说的是同一件事，不用重新认一遍颜色。 */
+.res-kind{margin-bottom:10px}
+.res-kind:last-child{margin-bottom:0}
+.rk-head{display:flex;align-items:center;gap:6px;font-size:11.5px;
+  color:var(--text-secondary);font-weight:600;margin:0 0 6px}
+.rk-head .kdot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+.rk-head .rk-n{font-size:10.5px;color:var(--muted);font-weight:500}
+/* 卡片往右缩一格 —— 缩进本身就是「它属于上面那个类型」的信号 */
+.res-kind .item{margin-left:14px}
+.res-kind .item:last-child{margin-bottom:0}
+/* 正在改的那一条：蓝色描边，跟上面那张表单里填的内容对得起来 */
+.item.editing{border-color:var(--series-1)}
 /* 倒计时列表里「待办 / 已完成」之间那道分隔 */
 .cd-sep{font-size:11px;font-weight:650;color:var(--muted);margin:12px 0 8px;
   padding-top:9px;border-top:1px solid var(--border)}

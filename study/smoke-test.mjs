@@ -2112,6 +2112,212 @@ ok(siteSnap.backend.tables.includes('site'), 'backend.tables 里有 site');
 ok(/setup-10-site\.sql/.test(siteSnap.backend.schema_sql), 'schema_sql 列到了 setup-10-site.sql');
 ok(!('site' in siteSnap.data), 'site 不在 data 里（否则导入会报告「跳过 1 行·属于对方」）');
 
+/* ══════════════════════════════════════════════════════════════
+   2026-09-26 追加：资源列表分两层、已添加的资源可继续改、改自己的名字
+   ══════════════════════════════════════════════════════════════ */
+console.log('── 学习资源：列表按「学科 → 类型」分两层 ──');
+tabs[4].fire('click'); await tick();
+
+/* 只看**我那一栏** —— 两栏各分各的，混在一起数会把对方那栏也算进来。
+   who/me 每次刷新都是新节点，所以这里写成函数，别存下来。 */
+const myCol   = () => findAll($('res-cols'), (n) => hasCls(n, 'who') && hasCls(n, 'me'))[0];
+const rGroups = () => findAll(myCol(), (n) => hasCls(n, 'res-group'));
+const gName   = (g) => (findAll(g, (n) => hasCls(n, 'rg-name'))[0] || {}).textContent;
+const gN      = (g) => (findAll(g, (n) => hasCls(n, 'rg-n'))[0] || {}).textContent;
+const kNames  = (g) => findAll(g, (n) => hasCls(n, 'rk-name')).map((n) => n.textContent);
+
+ok(rGroups().length === 2,
+  '我这一栏分了 2 个学科组（数学 3 个 + 英语 1 个）：' + rGroups().map(gName).join(' / '));
+ok(gName(rGroups()[0]) === '数学' && gN(rGroups()[0]) === '3 个',
+  '第一组是数量最多的那一科，个数标在组头上不用她数：' + gName(rGroups()[0]) + ' ' + gN(rGroups()[0]));
+ok(kNames(rGroups()[0]).join('|') === '工具书|网课|老师',
+  '学科里面再按类型细分，顺序固定：' + kNames(rGroups()[0]).join('|'));
+const kindDots = findAll(rGroups()[0], (n) => hasCls(n, 'kdot'));
+ok(kindDots.length === 3
+  && String(kindDots[0].style.background).includes('--series-1')
+  && String(kindDots[1].style.background).includes('--series-2')
+  && String(kindDots[2].style.background).includes('--series-3'),
+  '每个类型头上有色点，用的就是宏观图那三个色（图跟列表说的是同一件事）：'
+  + kindDots.map((d) => d.style.background).join(' '));
+ok(!findAll(rGroups()[0], (n) => hasCls(n, 'pill') && /工具书|网课|老师/.test(n.textContent)).length,
+  '卡片上不再重复标一遍类型 —— 小组头已经写了，再标一遍是啰嗦');
+
+/* 临时造两条极端数据：一条没填学科、一条 kind 是脏值。测完原样还回去。 */
+const keepResForGroup = DB.resources.map((r) => Object.assign({}, r));
+DB.resources.push(
+  { id: 'r9', owner: ME, kind: 'book', name: '化学习题', platform: '', subject: '化学',
+    url: '', status: 'todo', created_at: '2026-09-25T00:00:00Z' },
+  { id: 'r8', owner: ME, kind: 'weird', name: '不知道哪来的', platform: '', subject: '',
+    url: '', status: 'todo', created_at: '2026-09-25T01:00:00Z' });
+$('btn-refresh').fire('click'); await tick(); await tick();
+
+const chem = rGroups().find((g) => gName(g) === '化学');
+ok(!!chem && kNames(chem).join('|') === '工具书',
+  '新加的那一科自己成一组，组内照样按类型分：' + (chem ? kNames(chem).join('|') : '(没有化学组)'));
+
+/* 脏 kind 的那条没填学科，所以它落在「未分类」组里。
+   两条断言都在这一组上：学科兜底 + 类型兜底 —— 库里的行一条都不能凭空消失。 */
+const unc = rGroups()[rGroups().length - 1];
+ok(gName(unc) === '未分类',
+  '没填学科的那条归到「未分类」，而且**永远排在最后**，不顶在分好类的上面：'
+  + rGroups().map(gName).join(' / '));
+ok(kNames(unc).join('|') === '其他',
+  'kind 是脏值的那条兜进「其他」小组，不会凭空消失：' + kNames(unc).join('|'));
+const othDot = findAll(unc, (n) => hasCls(n, 'kdot'))[0];
+ok(!!othDot && String(othDot.style.background).includes('--muted'),
+  '「其他」用中性色，不占用那三个正经类型的颜色：' + (othDot ? othDot.style.background : '(没有)'));
+
+DB.resources.length = 0;
+keepResForGroup.forEach((r) => DB.resources.push(r));
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok(rGroups().length === 2, '还回去之后恢复成 2 组（临时那两条没留在库里）：' + rGroups().map(gName).join(' / '));
+
+console.log('── 学习资源：已添加的也能接着改（回填表单那一套）──');
+const resRowOf = (name) => findAll($('res-cols'), (n) => hasCls(n, 'item') && n.textContent.includes(name))[0];
+const cancelBtn = () => $('r-cancel');
+
+btns(resRowOf('线性代数应该这样学'), '改')[0].fire('click'); await tick();
+ok($('r-name').value === '线性代数应该这样学', '点「改」把名称填回了上面的表单：' + $('r-name').value);
+ok($('r-subject').value === '数学' && $('r-platform').value === '',
+  '学科 / 平台也一并填回去（改的时候能改，分组跟着变）');
+ok($('r-kind').value === 'book', '类型也填回去了 —— 它决定列表分到哪个小组');
+ok($('r-add').textContent === '保存修改', '按钮文案换成两个状态里的第二个：' + $('r-add').textContent);
+ok(cancelBtn().hidden === false, '旁边冒出「取消」，改一半能反悔');
+ok($('r-chapters-box').hidden === true,
+  '「共几章」在改的时候藏起来 —— 改少了要删她的行、改多了要凭空造行，两个都不该顺手做');
+ok(hasCls(resRowOf('线性代数应该这样学'), 'editing'),
+  '正在改的那一行加了 .editing，一眼看得出表单里编辑的是哪一条');
+const beingEdited = btns(resRowOf('线性代数应该这样学'), '正在改')[0];
+ok(!!beingEdited && beingEdited.disabled === true,
+  '那一行自己的按钮变禁用，不会被点两次');
+
+/* 改一半刷新（对方推来的实时事件也走这条路）：编辑态不能丢 */
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('r-add').textContent === '保存修改' && $('r-name').value === '线性代数应该这样学',
+  '改到一半来一次刷新，编辑态和填好的内容都还在');
+
+const r1Idx = DB.resources.findIndex((r) => r.id === 'r1');
+const keepR1 = Object.assign({}, DB.resources[r1Idx]);
+$('r-name').value = '线性代数（改过名）';
+$('r-platform').value = '图书馆';
+$('r-add').fire('click'); await tick(); await tick();
+const r1Now = DB.resources.find((r) => r.id === 'r1');
+ok(r1Now.name === '线性代数（改过名）' && r1Now.platform === '图书馆',
+  '保存修改真的写库了：' + r1Now.name + ' / ' + r1Now.platform);
+ok(DB.resources.length === 5 && DB.resources.filter((r) => r.id === 'r1').length === 1,
+  '走的是 update 不是 insert —— 没多出一行：' + DB.resources.length + ' 条');
+ok(r1Now.owner === ME && r1Now.created_at === keepR1.created_at,
+  'owner 和 created_at 一个字都没动（改的时候不该碰这两列）');
+ok($('r-add').textContent === '添加' && $('r-name').value === ''
+   && cancelBtn().hidden === true && $('r-chapters-box').hidden === false,
+  '存完表单自己清回「新建」的样子，「共几章」也回来了');
+ok(!hasCls(resRowOf('线性代数（改过名）'), 'editing'), '那一行也不再是编辑态');
+ok($('toast').textContent.includes('已保存'), '并且回一句「已保存」：' + $('toast').textContent);
+
+btns(resRowOf('线性代数（改过名）'), '改')[0].fire('click'); await tick();
+$('r-name').value = '这个不该被存进去';
+cancelBtn().fire('click'); await tick(); await tick();
+ok(!DB.resources.some((r) => r.name === '这个不该被存进去'), '点「取消」一个字都不写库');
+ok($('r-name').value === '' && $('r-add').textContent === '添加' && cancelBtn().hidden === true
+   && $('r-chapters-box').hidden === false && !hasCls(resRowOf('线性代数（改过名）'), 'editing'),
+  '取消之后表单清空、按钮回「添加」、取消自己收起来、那一行也不是编辑态了');
+
+/* 正在改的那条被别人删了（另一台设备 / 另一个页签）→ 表单必须退回「新建」。
+   不兜的话按「保存修改」会 update 到 0 行，看着像保存成功了、其实什么也没发生。 */
+btns(resRowOf('线性代数（改过名）'), '改')[0].fire('click'); await tick();
+const r1Gone = DB.resources.splice(r1Idx, 1)[0];
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('r-add').textContent === '添加' && cancelBtn().hidden === true,
+  '正在改的那条被别人删了 → 表单自动退回「新建」，不会假装存成功');
+
+DB.resources.splice(r1Idx, 0, r1Gone);
+Object.assign(r1Gone, keepR1);
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok(!!resRowOf('线性代数应该这样学') && !hasCls(resRowOf('线性代数应该这样学'), 'editing')
+   && DB.resources.length === 5,
+  '把 r1 按原来的位置还回去，列表恢复原样：' + DB.resources.length + ' 条');
+
+console.log('── 我的名字：各改各的（页头 / 状态卡 / 动态流里那个）──');
+/* 前提：没上传头像。前面「头像上传」那一段给 ME 写过 data URL，
+   有头像时页头那个圆显示的是图片、textContent 当然是空的 ——
+   下面这几条测的是**没头像**时「圆里那个字取名字首字」，先把头像清掉。 */
+const meProfile = DB.profiles.find((p) => p.id === ME);
+const keepAvatar = meProfile.avatar;
+meProfile.avatar = '';
+$('btn-refresh').fire('click'); await tick(); await tick();
+tabs[6].fire('click'); await tick();
+ok($('pn-name').value === '小 A', '输入框里预填的是库里那个名字：' + $('pn-name').value);
+ok(/id="pn-name"[^>]*maxlength="12"/.test(htmlSrc),
+  '输入框自己也带着 12 字上限，不用等按了保存才知道太长');
+ok(!findAll($('me-av'), (n) => n.tagName === 'IMG').length && $('me-av').textContent === '小',
+  '还没上传头像时，页头那个圆里取名字的第一个字：' + JSON.stringify($('me-av').textContent));
+
+$('pn-name').value = '阿明';
+$('pn-save').fire('click'); await tick(); await tick();
+ok(DB.profiles.find((p) => p.id === ME).display_name === '阿明', '新名字真的写库了');
+ok(DB.profiles.find((p) => p.id === OT).display_name === '小 B',
+  '**只改自己那一行** —— 对方那条一个字没动（RLS 也只让改自己的）');
+ok($('me-av').textContent === '阿', '页头那个圆立刻跟着换，不用刷新：' + $('me-av').textContent);
+ok($('toast').textContent.includes('名字改好了'), '并且回一句「名字改好了」：' + $('toast').textContent);
+
+/* 导出快照顶层那个 me.display_name 走的是 nameOf()（读 profileMap），
+   data.profiles 那份走的是 profileList —— 两条路都得改，不然导出来的还是旧名字。
+   ⚠️ 假库返回的是**同一批对象引用**，profileList 里那行跟 DB.profiles 里那行是
+      同一个对象，所以「忘了同步 profileList」这个错法在这里抓不出来（变异检验
+      证实过：把同步那两行删掉，下面两条照样全绿）。那一步只有在真库里才看得出来。
+      留着这两条是因为它们钉的是「导出结果是对的」这个结果本身。 */
+const nameSnap = (() => {
+  const orig = globalThis.Blob;
+  let text = '';
+  globalThis.Blob = class { constructor(parts) { text = String(parts[0]); } };
+  $('btn-export').fire('click');
+  globalThis.Blob = orig;
+  return JSON.parse(text);
+})();
+ok(nameSnap.me && nameSnap.me.display_name === '阿明',
+  '导出的快照顶层 me 里是新名字：' + JSON.stringify(nameSnap.me && nameSnap.me.display_name));
+const meInSnap = ((nameSnap.data || {}).profiles || []).find((p) => p.id === ME);
+ok(!!meInSnap && meInSnap.display_name === '阿明',
+  '快照 data.profiles 里那一行也是新名字：' + JSON.stringify(meInSnap && meInSnap.display_name));
+
+/* 在框里打字时，刷新不能把正在打的名字盖掉（对方那台设备推实时事件 = 同一条路） */
+$('pn-name').value = '打到一半的名字';
+document.activeElement = $('pn-name');
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('pn-name').value === '打到一半的名字', '正在这个框里打字时，刷新不会把没打完的名字回填掉');
+ok(DB.profiles.find((p) => p.id === ME).display_name === '阿明',
+  '（但库里那个名字没被这个「打到一半」的字符串污染）');
+document.activeElement = null;
+$('pn-name').value = '';
+
+/* 空 / 超长都要拦下来，别把库里的名字改坏。
+   超长那条故意用「超」开头 —— 万一没拦住，页头那个圆会跟着变成「超」，
+   跟「阿明」区分得开，这条断言才真的在测东西。 */
+$('pn-name').value = '   ';
+$('pn-save').fire('click'); await tick(); await tick();
+ok(DB.profiles.find((p) => p.id === ME).display_name === '阿明', '名字空着（或全是空格）不写库');
+ok($('toast').textContent.includes('名字不能是空的'), '并且说清楚原因：' + $('toast').textContent);
+
+$('pn-name').value = '超'.repeat(13);
+$('pn-save').fire('click'); await tick(); await tick();
+ok(DB.profiles.find((p) => p.id === ME).display_name === '阿明', '超过 12 个字不写库');
+ok($('toast').textContent.includes('最多 12 个字'), '并且说清楚是长度问题：' + $('toast').textContent);
+ok($('me-av').textContent === '阿', '拦下来之后页头那个圆没被改坏：' + $('me-av').textContent);
+
+/* 写失败（RLS 挡住 / 网络抖）时不能装作改成功了 */
+$('pn-name').value = '存不下的名字';
+failNext = 'permission denied for table profiles';
+$('pn-save').fire('click'); await tick(); await tick();
+ok(!DB.profiles.some((p) => p.display_name === '存不下的名字'), '写失败时一个字都没写进去');
+ok($('me-av').textContent === '阿', '页头还是原来那个名字，没被改坏');
+
+meProfile.display_name = '小 A';
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('pn-name').value === '小 A' && $('me-av').textContent === '小', '名字还回去，页面跟着回到原样');
+/* 头像还回去 —— 这一段开头是**借**「没头像」这个前提来测的，用完还给人家 */
+meProfile.avatar = keepAvatar;
+$('btn-refresh').fire('click'); await tick(); await tick();
+
 console.log('── CSS：[hidden] 必须是硬开关 ──');
 /* 回归测试：登录成功后登录页没消失、直接盖住主页。
    根因是「作者样式表压过浏览器默认样式表」——
@@ -2132,6 +2338,27 @@ ok(guarded, 'app.css 有 [hidden]{display:none !important}');
 ok(loginDisplayRules.length === 0 || guarded,
   '有 ' + loginDisplayRules.length + ' 条规则对登录浮层写了 display，已被 [hidden] 兜住',
   loginDisplayRules.join(' | '));
+
+/* ── 资源列表那两层分组的样式 ──
+   断的是「层级看得出来」这件事：光有 DOM 结构、没有缩进和分隔线，
+   屏幕上看上去还是一堆平铺的卡片，她说的「不直观」就还在。 */
+ok(/\.res-kind\s+\.item\s*\{[^}]*margin-left\s*:\s*14px/.test(cssNoComment),
+  '组内的卡片缩进一格 —— 缩进本身就是「它属于上面那个类型」的信号');
+ok(/\.rg-head\s*\{[^}]*border-bottom\s*:/.test(cssNoComment),
+  '学科组头下面有一条细分隔线，跟下面的卡片分得开');
+ok(/\.rg-n\s*\{[^}]*margin-left\s*:\s*auto/.test(cssNoComment),
+  '组头右边那个「N 个」被推到最右边，不跟学科名挤在一起');
+ok(/\.item\.editing\s*\{[^}]*border-color\s*:\s*var\(--series-1\)/.test(cssNoComment),
+  '正在改的那一行用蓝描边标出来，跟上面表单里填的对得上');
+
+/* 引一个**不存在**的自定义属性，浏览器会静默忽略整条声明 ——
+   这类错没有任何别的机会被发现（假 DOM 不算 CSS，也没人去看渲染结果）。
+   这里把「用到的 token」跟「定义过的 token」对一遍。 */
+const definedTokens = new Set([...cssNoComment.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]));
+const usedTokens = [...cssNoComment.matchAll(/var\((--[a-z0-9-]+)/g)].map((m) => m[1]);
+const missingTokens = [...new Set(usedTokens)].filter((t) => !definedTokens.has(t));
+ok(missingTokens.length === 0,
+  'CSS 里引用的自定义属性都真的定义过：' + (missingTokens.join(' ') || '(没有漏的)'));
 
 console.log('── 登录报错能区分「账号不存在」和「邮箱没确认」──');
 ok(/email_not_confirmed/.test(fs.readFileSync(path.join(DIR, 'app.js'), 'utf8')),

@@ -131,6 +131,9 @@
        cdNoCol = 库里还没有 due_date 那一列时置位（setup-7 跑之前）。 */
     cdNoCol: false,
     cdEdit: null,         // 正在改的那条倒计时的 id，null = 上面那个表单是「新建」
+    /* 学习资源：正在改的那一行的 id，null = 上面那个表单是「新建」。
+       跟倒计时 / 考试成绩同一套做法（点「改」把这一条填回表单，不是就地编辑）。 */
+    resEdit: null,
     /* 校训。两个人的共同装饰，不按 owner 分（见 setup-8-mottos.sql）。
        mtNoTable = 表还没建，这时用内置的 MWORDS 兜底显示，只是改不了。
        mtEdit    正在改的那一条的 id，null = 没在改 */
@@ -775,6 +778,10 @@
   async function refresh() {
     try {
       await loadAll();
+      /* 页头那个头像圆不在任何一个页签里，renderCurrent() 管不到它 ——
+         得在这里单独画一次，否则对方在另一台设备改了头像 / 名字，这边
+         刷新之后页头还是旧的（改名那条路自己也画了一次，这里是兜底）。 */
+      paintMeAvatar();
       renderCurrent();
     } catch (e) {
       toast('读取失败：' + e.message, true);
@@ -2053,10 +2060,206 @@
   }
 
   /* ── 页签四：学习资源 ──────────────────────────────────────── */
+  /* 一栏里的资源摆成「学科 → 类型」两层。资源攒到十几本之后平铺着看，
+     想找「数学那几本」得一行行扫过去；分两层之后一眼就知道哪一科堆了多少。
+     **口径跟上面那张宏观图是同一份**（都是 subject 分组、组内按 kind 细分），
+     免得图和列表各说各的。 */
+  function resGroups(rows) {
+    const bySub = new Map();
+    for (const r of rows) {
+      const key = (r.subject || '').trim() || '未分类';
+      if (!bySub.has(key)) bySub.set(key, []);
+      bySub.get(key).push(r);
+    }
+    const groups = [...bySub.entries()].map(([name, list]) => {
+      const byKind = KINDS
+        .map((k) => ({ kind: k, list: list.filter((r) => r.kind === k.key) }))
+        .filter((g) => g.list.length);
+      /* 库里 kind 是脏值的行不能凭空消失 —— 兜进一个「其他」小组 */
+      const rest = list.filter((r) => !KIND_LABEL[r.kind]);
+      if (rest.length) byKind.push({ kind: { key: 'other', label: '其他', varName: '--muted' }, list: rest });
+      return { name, byKind, n: list.length };
+    });
+    /* 「未分类」永远排最后 —— 没填学科的那些不该顶在最前面，把分好类的挤下去。
+       其余按数量降序、同数按名字（和宏观图一致）。 */
+    return groups.sort((a, b) => {
+      const au = a.name === '未分类', bu = b.name === '未分类';
+      if (au !== bu) return au ? 1 : -1;
+      return b.n - a.n || a.name.localeCompare(b.name, 'zh');
+    });
+  }
+
+  /* 一行资源。抽出来是因为它现在要挂在「学科 → 类型」两层里 ——
+     内容跟以前一样，只是**不再重复标类型**（小组头已经写了）。
+     正在改的那一行加 .editing，一眼看得出表单里编辑的是哪一条。 */
+  function resRow(r, mine) {
+    /* 这一本书 / 这门课被拆成几章、完成到哪了。章就是 subtasks，
+       和「今天完成情况」勾的是同一批行 —— 那边勾一下，这里立刻亮一段。 */
+    const subs = subsOfRes(r.id);
+    const dn = subs.filter((x) => x.done).length;
+    const pp = subs.length ? pct(dn, subs.length) : 0;
+    const editing = S.resEdit === r.id;
+
+    return h('div', { class: 'item' + (editing ? ' editing' : '') },
+      h('div', { class: 't' },
+        h('span', { class: 'grow', text: r.name })
+      ),
+      (r.platform || r.subject) ? h('div', { class: 'd' },
+        [r.platform, r.subject].filter(Boolean).join(' · ')) : null,
+      subs.length ? h('div', { class: 'bar seg' },
+        subs.map((x, i) => h('i', {
+          class: 'sq' + (x.done ? ' on' : ''),
+          title: '第 ' + (i + 1) + ' 章：' + (x.title || '(未填写)') + (x.done ? ' ✅ 已完成' : ' ⬜ 未完成'),
+        }))
+      ) : null,
+      subs.length ? h('div', { class: 'bar-txt' },
+        h('span', { text: '共 ' + subs.length + ' 章，已完成 ' + dn + ' 章' }),
+        h('span', { class: 'pct' + (pp === 100 ? ' full' : ''), text: pp + '%' })
+      ) : null,
+      subs.length ? h('details', { class: 'subs-fold' },
+        h('summary', { text: '章节清单（' + dn + ' / ' + subs.length + '）' }),
+        h('div', { class: 'subs' }, subs.map((x) => subRow(x, mine))),
+        mine ? h('div', { class: 'acts' },
+          h('button', { class: 'tiny', text: '＋ 加一章', onclick: () => addChapter(r, subs) })) : null
+      ) : (mine ? h('div', { class: 'acts' },
+        h('button', {
+          class: 'tiny', text: '＋ 分章',
+          title: '把这本书 / 这门课拆成章节，就能一章一章勾进度',
+          onclick: () => addChapter(r, subs),
+        })) : null),
+      mine ? h('div', { class: 'm' },
+        h('span', { text: '状态' }),
+        h('select', {
+          style: { maxWidth: '130px' },
+          onchange: async (e) => {
+            r.status = e.target.value;
+            await quiet(sb.from('resources').update({ status: r.status }).eq('id', r.id));
+          },
+        }, Object.keys(STATUS_LABEL).map((k) =>
+          h('option', { value: k, text: STATUS_LABEL[k], selected: r.status === k })))
+      ) : h('div', { class: 'm' },
+        h('span', { class: 'pill' + (r.status === 'done' ? ' ok' : ''), text: STATUS_LABEL[r.status] || r.status })
+      ),
+      mine ? h('div', { class: 'acts' },
+        h('button', {
+          class: 'tiny', text: editing ? '正在改' : '改',
+          disabled: editing ? true : null,
+          title: '把这个资源的名称 / 类型 / 平台 / 学科填回上面的表单',
+          onclick: () => editRes(r),
+        }),
+        h('button', {
+          class: 'tiny danger', text: '删除',
+          onclick: () => removeRow('resources', r.id, '资源「' + r.name + '」'),
+        })
+      ) : null
+    );
+  }
+
+  /* 关掉编辑态、把上面那张表单清回「新建」的样子 */
+  function resetResForm() {
+    S.resEdit = null;
+    $('r-name').value = '';
+    $('r-platform').value = '';
+    $('r-subject').value = '';
+    $('r-chapters').value = '';
+    $('r-add').textContent = '添加';
+    $('r-cancel').hidden = true;
+    $('r-chapters-box').hidden = false;
+  }
+
+  /* 「改」是把这一条填回上面那张表单，**不是就地编辑** ——
+     跟倒计时 / 考试成绩同一套做法，三个页面手感一致（她已经在用那套了）。
+     S.resEdit 为 null 就是新建，按钮文案两个状态。 */
+  function editRes(r) {
+    S.resEdit = r.id;
+    $('r-kind').value     = r.kind || 'book';
+    $('r-name').value     = r.name || '';
+    $('r-platform').value = r.platform || '';
+    $('r-subject').value  = r.subject || '';
+    $('r-status').value   = r.status || 'todo';
+    $('r-add').textContent = '保存修改';
+    $('r-cancel').hidden = false;
+    /* 「共几章」只在新建时有意义：改少了要删她的行、改多了要凭空造行，
+       两个都不该顺手做。章节归那一行上的「＋ 分章」管。 */
+    $('r-chapters-box').hidden = true;
+    /* 表单在列表上面，列表长的时候点了「改」看不见它 —— 滚上去 */
+    $('r-name').scrollIntoView({ block: 'center', behavior: 'smooth' });
+    $('r-name').focus();
+    /* 重画列表：那一行要立刻变成 .editing（描边 + 按钮说「正在改」）。
+       不重画的话，点「改」在界面上**看不出任何变化** —— 光改 S.resEdit 是不够的。 */
+    renderRes();
+  }
+
+  /* 加一条资源；正在改的时候同一个按钮 = 保存修改。
+     跟倒计时 / 考试成绩同一套：`S.resEdit` 为 null 就是新建。 */
+  async function addRes() {
+    const name = $('r-name').value.trim();
+    if (!name) { toast('先写名称', true); $('r-name').focus(); return; }
+    const btn = $('r-add');
+    const editing = S.resEdit;
+    /* 改的时候**只动这几个字段**，不碰 owner / url / created_at。
+       「共几章」也不在这儿管 —— 章节是 subtasks，归那一行上的「＋ 分章」，
+       而且改少了要删她的行、改多了要凭空造行，两个都不该顺手做。 */
+    const fields = {
+      kind: $('r-kind').value, name: name,
+      platform: $('r-platform').value.trim(), subject: $('r-subject').value.trim(),
+      status: $('r-status').value,
+    };
+
+    btn.disabled = true;
+
+    if (editing) {
+      const { error } = await sb.from('resources').update(fields).eq('id', editing);
+      btn.disabled = false;
+      if (error) { toast(error.message, true); return; }
+      resetResForm();
+      toast('已保存');
+      await refresh();
+      return;
+    }
+
+    /* .select().single() 是为了拿回新行的 id —— 要拿它去建章节 */
+    const { data, error } = await sb.from('resources')
+      .insert(Object.assign({ owner: S.me.id, url: '' }, fields)).select().single();
+
+    if (error) {
+      btn.disabled = false;
+      toast(error.message, true);
+      return;
+    }
+
+    /* 建的时候填了「共几章」就一次生成好，省得进去点 n 次「＋ 加一章」 */
+    const n = Math.max(0, Math.min(200, parseInt($('r-chapters').value, 10) || 0));
+    let chErr = null;
+    if (n && data && data.id) {
+      const list = [];
+      for (let i = 1; i <= n; i++) {
+        list.push({ resource_id: data.id, owner: S.me.id, seq: i, title: '第 ' + i + ' 章', detail: '' });
+      }
+      const res = await sb.from('subtasks').insert(list);
+      chErr = res.error;
+    }
+    btn.disabled = false;
+
+    if (chErr) {
+      /* 资源本身建好了，只是章节没建成（多半是 SQL 还没跑）—— 如实说清楚，
+         别说成「添加失败」让她以为白填了一遍 */
+      toast('资源已加，但章节没生成：' + schemaWarn(chErr), true);
+    } else {
+      toast(n ? '已添加，并生成 ' + n + ' 章' : '已添加');
+    }
+    resetResForm();
+    await refresh();
+  }
+
   function renderRes() {
     const all = S.resources;
     const scoped = all.filter(inScope);
     const n = (k) => scoped.filter((r) => r.kind === k).length;
+
+    /* 正在改的那条被别人删了（另一台设备 / 另一个页签）→ 表单退回「新建」。
+       不兜的话按「保存修改」会 update 到 0 行，看着像保存成功了、其实什么也没发生。 */
+    if (S.resEdit && !all.some((r) => r.id === S.resEdit)) resetResForm();
 
     $('res-tiles') && clear($('res-tiles'));
     $('res-tiles').appendChild(tile('资源总数', scoped.length));
@@ -2070,63 +2273,23 @@
     twoCols($('res-cols'), all, (owner, rows, mine) => {
       if (!rows.length) return emptyNote(mine ? '还没添加资源。' : '对方还没添加资源。');
       const wrap = h('div');
-      for (const r of rows) {
-        /* 这一本书 / 这门课被拆成几章、完成到哪了。章就是 subtasks，
-           和「今天完成情况」勾的是同一批行 —— 那边勾一下，这里立刻亮一段。 */
-        const subs = subsOfRes(r.id);
-        const dn = subs.filter((x) => x.done).length;
-        const pp = subs.length ? pct(dn, subs.length) : 0;
-
-        wrap.appendChild(
-          h('div', { class: 'item' },
-            h('div', { class: 't' },
-              h('span', { class: 'pill', text: KIND_LABEL[r.kind] || r.kind }),
-              h('span', { class: 'grow', text: r.name })
+      for (const g of resGroups(rows)) {
+        wrap.appendChild(h('div', { class: 'res-group' },
+          /* 组头写学科名 + 这一科有几样。个数直接标出来，不用她数 */
+          h('div', { class: 'rg-head' },
+            h('span', { class: 'rg-name', text: g.name }),
+            h('span', { class: 'rg-n', text: g.n + ' 个' })
+          ),
+          /* 学科里面再按类型分一层 —— 色点跟上面那张宏观图同一套（series-1/2/3） */
+          g.byKind.map((k) => h('div', { class: 'res-kind' },
+            h('div', { class: 'rk-head' },
+              h('span', { class: 'kdot', style: { background: 'var(' + k.kind.varName + ')' } }),
+              h('span', { class: 'rk-name', text: k.kind.label }),
+              h('span', { class: 'rk-n', text: String(k.list.length) })
             ),
-            (r.platform || r.subject) ? h('div', { class: 'd' },
-              [r.platform, r.subject].filter(Boolean).join(' · ')) : null,
-            subs.length ? h('div', { class: 'bar seg' },
-              subs.map((x, i) => h('i', {
-                class: 'sq' + (x.done ? ' on' : ''),
-                title: '第 ' + (i + 1) + ' 章：' + (x.title || '(未填写)') + (x.done ? ' ✅ 已完成' : ' ⬜ 未完成'),
-              }))
-            ) : null,
-            subs.length ? h('div', { class: 'bar-txt' },
-              h('span', { text: '共 ' + subs.length + ' 章，已完成 ' + dn + ' 章' }),
-              h('span', { class: 'pct' + (pp === 100 ? ' full' : ''), text: pp + '%' })
-            ) : null,
-            subs.length ? h('details', { class: 'subs-fold' },
-              h('summary', { text: '章节清单（' + dn + ' / ' + subs.length + '）' }),
-              h('div', { class: 'subs' }, subs.map((x) => subRow(x, mine))),
-              mine ? h('div', { class: 'acts' },
-                h('button', { class: 'tiny', text: '＋ 加一章', onclick: () => addChapter(r, subs) })) : null
-            ) : (mine ? h('div', { class: 'acts' },
-              h('button', {
-                class: 'tiny', text: '＋ 分章',
-                title: '把这本书 / 这门课拆成章节，就能一章一章勾进度',
-                onclick: () => addChapter(r, subs),
-              })) : null),
-            mine ? h('div', { class: 'm' },
-              h('span', { text: '状态' }),
-              h('select', {
-                style: { maxWidth: '130px' },
-                onchange: async (e) => {
-                  r.status = e.target.value;
-                  await quiet(sb.from('resources').update({ status: r.status }).eq('id', r.id));
-                },
-              }, Object.keys(STATUS_LABEL).map((k) =>
-                h('option', { value: k, text: STATUS_LABEL[k], selected: r.status === k })))
-            ) : h('div', { class: 'm' },
-              h('span', { class: 'pill' + (r.status === 'done' ? ' ok' : ''), text: STATUS_LABEL[r.status] || r.status })
-            ),
-            mine ? h('div', { class: 'acts' },
-              h('button', {
-                class: 'tiny danger', text: '删除',
-                onclick: () => removeRow('resources', r.id, '资源「' + r.name + '」'),
-              })
-            ) : null
-          )
-        );
+            k.list.map((r) => resRow(r, mine))
+          ))
+        ));
       }
       return wrap;
     });
@@ -2576,8 +2739,52 @@
       ' · 日记 ' + S.daily.length + ' · 资源 ' + S.resources.length +
       ' · 考试 ' + S.exams.length +
       ' · 关联 ' + S.links.length;
+    renderNameAdmin();
     renderSiteAdmin();
     renderMottoAdmin();
+  }
+
+  /* ── 我的名字（「导出 / 导入」页，在站名上面）────────────────────
+     `profiles.display_name` 本来就存着这个名字（页头头像上的字、状态卡、
+     动态流里显示的都是它），只是以前**没有任何地方能改** —— 一直停在注册时写死的
+     那个「小 A / 小 B」。这张卡就是给它开个口子。
+     跟站名的区别：站名是两个人共用的（`site` 表，没有 owner），
+     这个名字是**各改各的**（RLS 的 profiles 策略只让改自己那一行），
+     所以这里没有「改对方名字」的入口，文案里也写清楚了。 */
+  const NAME_MAX = 12;
+
+  function renderNameAdmin() {
+    const input = $('pn-name');
+    if (!input || !S.me) return;
+    /* 正在这个框里打字时不回填 —— 同站名那张卡的理由：
+       renderCurrent() 每次改动（含对方推来的实时事件）都会重画这一页。 */
+    if (document.activeElement !== input) input.value = S.profileMap[S.me.id] || '';
+  }
+
+  async function saveMyName() {
+    if (!S.me) return;
+    const t = $('pn-name').value.trim();
+    if (!t) { toast('名字不能是空的', true); $('pn-name').focus(); return; }
+    /* 页面上 maxlength=12 已经拦了一道，这里再拦一道：绕过输入框（粘贴、
+       改 HTML）时也得给一句人话，而不是把数据库的报错甩出去。 */
+    if (t.length > NAME_MAX) { toast('名字最多 ' + NAME_MAX + ' 个字', true); $('pn-name').focus(); return; }
+
+    const btn = $('pn-save');
+    btn.disabled = true;
+    const r = await sb.from('profiles').update({ display_name: t }).eq('id', S.me.id);
+    btn.disabled = false;
+    if (r.error) { toast(schemaWarn(r.error), true); return; }
+
+    /* 本地两处都要改：`profileMap` 是**显示**用的（nameOf 读它），
+       `profileList` 是**导出快照**用的 —— 漏掉后者，导出的 JSON 里还是旧名字。 */
+    S.profileMap[S.me.id] = t;
+    const row = S.profileList.find((p) => p.id === S.me.id);
+    if (row) row.display_name = t;
+
+    paintMeAvatar();     // 页头那个大圆里的字取名字第一个字，得跟着换
+    renderNameAdmin();
+    renderCurrent();
+    toast('名字改好了');
   }
 
   /* ── 站名管理（「导出 / 导入」页最下面那一块，在校训上面）────────
@@ -3047,50 +3254,9 @@
       await refresh();
     });
 
-    $('r-add').addEventListener('click', async () => {
-      const name = $('r-name').value.trim();
-      if (!name) { toast('先写名称', true); return; }
-      const btn = $('r-add');
-      btn.disabled = true;
-      /* .select().single() 是为了拿回新行的 id —— 要拿它去建章节 */
-      const { data, error } = await sb.from('resources').insert({
-        owner: S.me.id, kind: $('r-kind').value, name: name,
-        platform: $('r-platform').value.trim(), subject: $('r-subject').value.trim(),
-        url: '', status: $('r-status').value,
-      }).select().single();
-
-      if (error) {
-        btn.disabled = false;
-        toast(error.message, true);
-        return;
-      }
-
-      /* 建的时候填了「共几章」就一次生成好，省得进去点 n 次「＋ 加一章」 */
-      const n = Math.max(0, Math.min(200, parseInt($('r-chapters').value, 10) || 0));
-      let chErr = null;
-      if (n && data && data.id) {
-        const list = [];
-        for (let i = 1; i <= n; i++) {
-          list.push({ resource_id: data.id, owner: S.me.id, seq: i, title: '第 ' + i + ' 章', detail: '' });
-        }
-        const res = await sb.from('subtasks').insert(list);
-        chErr = res.error;
-      }
-      btn.disabled = false;
-
-      if (chErr) {
-        /* 资源本身建好了，只是章节没建成（多半是 SQL 还没跑）—— 如实说清楚，
-           别说成「添加失败」让她以为白填了一遍 */
-        toast('资源已加，但章节没生成：' + schemaWarn(chErr), true);
-      } else {
-        toast(n ? '已添加，并生成 ' + n + ' 章' : '已添加');
-      }
-      $('r-name').value = '';
-      $('r-platform').value = '';
-      $('r-subject').value = '';
-      $('r-chapters').value = '';
-      await refresh();
-    });
+    $('r-add').addEventListener('click', addRes);
+    /* 取消也要重画 —— 不然那一行还留着 .editing 的描边和「正在改」，跟表单已经清空的状态对不上 */
+    $('r-cancel').addEventListener('click', () => { resetResForm(); renderRes(); toast('没改，表单已清空'); });
 
     /* 考试成绩：一次记一场。改的时候同一个按钮变成保存。 */
     $('ex-add').addEventListener('click', addExam);
@@ -3104,6 +3270,11 @@
       e.target.value = '';
     });
 
+    $('pn-save').addEventListener('click', saveMyName);
+    /* 回车 = 保存（跟站名那张卡一样，输入框里按回车不用去够按钮） */
+    $('pn-name').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); saveMyName(); }
+    });
     $('st-save').addEventListener('click', saveSiteTitle);
     $('mt-add').addEventListener('click', addMotto);
     $('mt-shuffle').addEventListener('click', () => { pickMotto(true); renderMottoAdmin(); });

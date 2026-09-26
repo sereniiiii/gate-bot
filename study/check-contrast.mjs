@@ -144,6 +144,10 @@ const TEXT_ON = [
   ['.cd-sep', '--page', '倒计时列表里「已完成」那道分隔'],
   ['.exscore .fs', '--surface-1', '分数右边那行「满分」'],
   ['.who h3 .badge', '--page', '「我 / 对方」那个小标记'],
+  ['.rg-head .rg-name', '--page', '资源列表的学科组名'],
+  ['.rg-head .rg-n', '--page', '学科组头右边那个「N 个」'],
+  ['.rk-head', '--page', '资源列表的类型小组名（色点旁边那行）'],
+  ['.rk-head .rk-n', '--page', '类型小组右边那个个数'],
 ];
 const noComment = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
 /* 取某个选择器块里 color:var(--x) 的 token 名 */

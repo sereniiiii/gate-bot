@@ -251,9 +251,11 @@
             <option value="doing">进行中</option>
             <option value="done">已完成</option>
           </select></div>
-        <div style="max-width:110px"><label class="f" for="r-chapters">共几章</label>
+        <div style="max-width:110px" id="r-chapters-box"><label class="f" for="r-chapters">共几章</label>
           <input type="number" id="r-chapters" min="0" max="200" step="1" placeholder="可留空"></div>
         <button class="primary" id="r-add">添加</button>
+        <!-- 点某一行上的「改」才出现（见 editRes）。跟倒计时 / 考试成绩同一套手感。 -->
+        <button id="r-cancel" hidden>取消</button>
       </div>
       <p class="hint">每一章下面的 <b>↔ 同一件事</b>：这一章如果就是某个大任务里的一步，
         在那儿关联一下，以后勾任意一边，两边一起算完成。<b>可以关联好几条</b>，
@@ -343,6 +345,19 @@
         <input type="file" id="file-import" accept=".json,application/json" hidden>
         <span class="hint" id="import-meta" style="margin:0"></span>
       </div>
+    </div>
+    <div class="card">
+      <h2>我的名字</h2>
+      <p class="hint" style="margin-top:0">
+        页头、状态卡、动态流里显示的那个名字。<b>各改各的</b>，改不了对方的。
+      </p>
+      <div class="row tight" style="margin-top:12px">
+        <input type="text" id="pn-name" maxlength="12" placeholder="小 A" style="max-width:260px">
+        <button class="primary" id="pn-save">保存</button>
+      </div>
+      <p class="hint">
+        12 个字以内，不能空着。还没上传头像时，头像上那个字取名字的第一个字。
+      </p>
     </div>
     <div class="card">
       <h2>站名</h2>
