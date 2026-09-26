@@ -82,9 +82,29 @@
     </div>
   </section>
 
-  <!-- ── 月度任务 ── -->
+  <!-- ── 月度任务（倒计时 + 月历） ── -->
   <section class="pane" id="pane-goals" hidden>
-    <!-- 月度任务视图（主位）——一格一天。数据是现算的：其他页签当月更新的东西
+    <!-- 倒计时（主位）——「几月几号要完成什么」。一行就是一件事 + 一个截止日，
+         按截止日排，最紧的在最上面；底部那个倒计时条按截止日落在月历上。 -->
+    <div class="card">
+      <h2>倒计时</h2>
+      <p class="sub" id="cd-sub">…</p>
+      <div class="row" style="margin-top:12px">
+        <div style="flex:2;min-width:180px"><label class="f" for="cd-title">要完成什么</label>
+          <input type="text" id="cd-title" placeholder="例如：交开题报告"></div>
+        <div><label class="f" for="cd-due">几月几号完成</label>
+          <input type="date" id="cd-due"></div>
+        <button class="primary" id="cd-add">加上</button>
+      </div>
+      <div class="field" style="margin-top:10px">
+        <label class="f" for="cd-detail">说明（可选）</label>
+        <input type="text" id="cd-detail" placeholder="交到哪 / 什么算完成">
+      </div>
+      <p class="hint" id="cd-warn" hidden></p>
+      <div class="cols" id="cd-cols" style="margin-top:14px"></div>
+    </div>
+
+    <!-- 月度任务视图——一格一天。数据是现算的：其他页签当月更新的东西
          （完成的小任务 / 目标、推进未完成的那一步、考的试、加的资源、当天的心情）
          都会自动落到对应的格子上，不用在这儿再录一遍。 -->
     <div class="card">
@@ -98,7 +118,8 @@
         <div class="mo-grid" id="mo-grid"></div>
       </div>
       <p class="hint">格子深浅和右下角数字 = 那天<b>完成</b>了几件事（小任务 + 目标）；
-        格子里的「考」= 那天有考试，后面跟的是得分；右上角小表情 = 那天记了心情。
+        格子里的「考」= 那天有考试，后面跟的是得分；右下角的「截」= 那天有事到期；
+        右上角小表情 = 那天记了心情。
         把鼠标停在格子上能看到那天的全部明细（含只推进未完成的、加的资源、写的两句），
         下面是同样内容的表格版。</p>
       <details style="margin-top:14px">
@@ -107,28 +128,34 @@
       </details>
     </div>
 
-    <!-- 30 天小目标（下面）——月视图的一路输入：自己给自己定的周期目标 -->
-    <div class="card">
-      <h2>新建 30 天小目标</h2>
-      <div class="row">
-        <div style="flex:2;min-width:180px"><label class="f" for="g-title">目标</label>
-          <input type="text" id="g-title" placeholder="例如：背完 300 个单词"></div>
-        <div><label class="f" for="g-target">目标值</label>
-          <input type="number" id="g-target" min="1" step="1" value="1"></div>
-        <div><label class="f" for="g-start">周期开始</label>
-          <input type="date" id="g-start"></div>
-        <button class="primary" id="g-add">添加</button>
-      </div>
-      <div class="field" style="margin-top:10px">
-        <label class="f" for="g-detail">说明（可选）</label>
-        <input type="text" id="g-detail" placeholder="怎么算完成？">
-      </div>
-      <p class="hint">周期 = 开始日 + 29 天。进度条按「进度 / 目标值」走；
-        标记完成的那天会落到上面的月视图里，落到哪一格按完成时间算。</p>
-    </div>
+    <!-- 以前的 30 天小目标：已经不更新了（被上面的倒计时取代），
+         但数据一行没删，进度条、加一减一、删除都还在，折叠着不占地方。 -->
+    <details class="fold">
+      <summary>以前的 30 天小目标（数据还在，已不再更新）</summary>
+      <div class="fold-body">
+        <div class="card">
+          <h2>新建 30 天小目标</h2>
+          <div class="row">
+            <div style="flex:2;min-width:180px"><label class="f" for="g-title">目标</label>
+              <input type="text" id="g-title" placeholder="例如：背完 300 个单词"></div>
+            <div><label class="f" for="g-target">目标值</label>
+              <input type="number" id="g-target" min="1" step="1" value="1"></div>
+            <div><label class="f" for="g-start">周期开始</label>
+              <input type="date" id="g-start"></div>
+            <button class="primary" id="g-add">添加</button>
+          </div>
+          <div class="field" style="margin-top:10px">
+            <label class="f" for="g-detail">说明（可选）</label>
+            <input type="text" id="g-detail" placeholder="怎么算完成？">
+          </div>
+          <p class="hint">周期 = 开始日 + 29 天，进度条按「进度 / 目标值」走。
+            已经改用上面的「倒计时」了，这块留着只是为了不弄丢以前记的东西。</p>
+        </div>
 
-    <!-- 目标备忘录 —— 两个人各自的小目标与进度 -->
-    <div class="cols" id="goals-cols"></div>
+        <!-- 目标备忘录 —— 两个人各自的小目标与进度 -->
+        <div class="cols" id="goals-cols"></div>
+      </div>
+    </details>
   </section>
 
   <!-- ── 大任务拆解 ── -->

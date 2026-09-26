@@ -23,16 +23,29 @@ if (!Object.keys(lvPct).length) {
   process.exit(1);
 }
 
-/* 哪些档位的日期字 / 考试标记被改成了主文字色，也从 app.css 里读 ——
+/* 哪些档位的日期字 / 格子里的标记被改成了主文字色，也从 app.css 里读 ——
    别在这里替它假设，否则把 CSS 那条规则删了脚本还说 PASS */
 const lvUsingPrimary = (cls) =>
   new Set([...CSS.matchAll(new RegExp('\\.mo-d\\.lv(\\d)\\s+\\' + '.' + cls, 'g'))].map((m) => Number(m[1])));
 const primaryLv = lvUsingPrimary('dn');
 const dePrimaryLv = lvUsingPrimary('de');
+const dlPrimaryLv = lvUsingPrimary('dl');
 if (primaryLv.size) console.log('（app.css 中 lv' + [...primaryLv].join(' / lv') + ' 的日期字使用主文字色）');
 if (!dePrimaryLv.size) {
   console.error('❌ app.css 里没有 .mo-d.lvN .de{color:var(--text-primary)} 这条 —— ' +
     '深色格子上「考108」这种小字会掉到 AA 以下');
+  process.exit(1);
+}
+if (!dlPrimaryLv.size) {
+  console.error('❌ app.css 里没有 .mo-d.lvN .dl{color:var(--text-primary)} 这条 —— ' +
+    '深色格子上「截」这个标记会掉到 AA 以下');
+  process.exit(1);
+}
+/* 两个标记必须同档提亮。少了任何一个都可能是因为加了一路新标记却只改了 .de ——
+   那种漏改在浅色 lv3 上实测是 4.45:1，肉眼看不出来。 */
+if ([...dePrimaryLv].sort().join() !== [...dlPrimaryLv].sort().join()) {
+  console.error('❌ .de（考）和 .dl（截）的提亮档位不一致：de = lv' + [...dePrimaryLv].join('/lv') +
+    '，dl = lv' + [...dlPrimaryLv].join('/lv') + '。格子里的标记要一起提亮。');
   process.exit(1);
 }
 
@@ -64,11 +77,14 @@ for (const [mode, M] of Object.entries(MODES)) {
     const bg = p ? mix(M.s1, M.surface, p) : hex(M.surface);
     const ink = primaryLv.has(lv) ? M.primary : M.secondary;
     const dInk = dePrimaryLv.has(lv) ? M.primary : M.secondary;
-    const r = ratio(hex(ink), bg), rv = ratio(hex(M.primary), bg), re = ratio(hex(dInk), bg);
-    const okd = r >= 4.5, okv = rv >= 4.5, oke = re >= 4.5;
-    if (!okd || !okv || !oke) bad++;
+    const lInk = dlPrimaryLv.has(lv) ? M.primary : M.secondary;
+    const r = ratio(hex(ink), bg), rv = ratio(hex(M.primary), bg);
+    const re = ratio(hex(dInk), bg), rl = ratio(hex(lInk), bg);
+    const okd = r >= 4.5, okv = rv >= 4.5, oke = re >= 4.5, okl = rl >= 4.5;
+    if (!okd || !okv || !oke || !okl) bad++;
     console.log(`  ${name.padEnd(12)} 底 ${fmt(bg)}  日期字 ${r.toFixed(2)}:1 ${okd ? 'PASS' : 'FAIL'}` +
-                `   考试标记 ${re.toFixed(2)}:1 ${oke ? 'PASS' : 'FAIL'}` +
+                `   考标记 ${re.toFixed(2)}:1 ${oke ? 'PASS' : 'FAIL'}` +
+                `   截标记 ${rl.toFixed(2)}:1 ${okl ? 'PASS' : 'FAIL'}` +
                 `   件数数字 ${rv.toFixed(2)}:1 ${okv ? 'PASS' : 'FAIL'}`);
   }
 }
@@ -79,9 +95,11 @@ for (const [mode, M] of Object.entries(MODES)) {
    颜色 token 从 app.css 里读、不写死在这里 —— 写死的话把 CSS 改坏了脚本还报 PASS。 */
 const VARS = {
   浅色: { '--surface-1': '#fcfcfb', '--page': '#f9f9f7', '--chip': '#f2f1ed',
-          '--text-primary': '#0b0b0b', '--text-secondary': '#52514e', '--muted': '#898781' },
+          '--text-primary': '#0b0b0b', '--text-secondary': '#52514e', '--muted': '#898781',
+          '--warning': '#fab219' },
   深色: { '--surface-1': '#1a1a19', '--page': '#0d0d0d', '--chip': '#242422',
-          '--text-primary': '#ffffff', '--text-secondary': '#c3c2b7', '--muted': '#898781' },
+          '--text-primary': '#ffffff', '--text-secondary': '#c3c2b7', '--muted': '#898781',
+          '--warning': '#fab219' },
 };
 /* [选择器, 它压在哪个底色 token 上, 说明] */
 const TEXT_ON = [
@@ -109,6 +127,39 @@ for (const [sel, bgTok, label] of TEXT_ON) {
     if (!okd) bad++;
     console.log(`  ${(mode + ' ' + sel).padEnd(24)} ${tok} 压在 ${bgTok} 上  ` +
                 `${r.toFixed(2)}:1 ${okd ? 'PASS' : 'FAIL'}   ${label}`);
+  }
+}
+
+/* 药丸：底色是 color-mix(警示黄 p%, chip)，字色从 app.css 里读。
+   为什么要单查这一档：黄在浅色底上当文字只有 1.84:1，是最容易顺手写错的一处
+   ——「快到期了」很自然会想写 color:var(--warning)，那样等于看不见。 */
+const warnPct = (() => {
+  const m = noComment.match(/\.pill\.warn\s*\{[^}]*?var\(--warning\)\s+([\d.]+)%/);
+  return m ? Number(m[1]) / 100 : null;
+})();
+const warnInk = inkToken('.pill.warn');
+/* 前面那个 (?:^|[;{\s]) 不能省：border-color:var(--warning) 里也含 "color:var(--warning)"，
+   少了它这条守卫会在正确的 CSS 上误报（第一版就是这么错的）。 */
+const warnColored = /(?:^|[;{\s])color\s*:\s*var\(--warning\)/.test(
+  (noComment.match(/\.pill\.warn\s*\{[^}]*\}/) || [''])[0]
+);
+console.log('\n【药丸：快到期】');
+if (warnColored) {
+  console.error('  ❌ .pill.warn 把文字染成了警示黄 —— 浅色底上只有 1.84:1，等于看不见。' +
+                '黄只用来描边/铺底，字走 --text-primary。');
+  bad++;
+} else if (warnPct === null || !warnInk) {
+  console.error('  ⚠️  没从 app.css 里解析出 .pill.warn 的底纹百分比或字色（选择器被改过？）');
+  bad++;
+} else {
+  for (const [mode, V] of Object.entries(VARS)) {
+    if (!V[warnInk]) { console.error(`  ⚠️  .pill.warn 用了未知字色 token ${warnInk}`); bad++; continue; }
+    const bg = mix(V['--warning'], V['--chip'], warnPct);
+    const r = ratio(hex(V[warnInk]), bg);
+    const ok = r >= 4.5;
+    if (!ok) bad++;
+    console.log(`  ${(mode + ' .pill.warn').padEnd(20)} 底 ${fmt(bg)}（警示黄 ${warnPct * 100}% + chip）  ` +
+                `${r.toFixed(2)}:1 ${ok ? 'PASS' : 'FAIL'}`);
   }
 }
 

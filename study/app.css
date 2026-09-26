@@ -120,6 +120,9 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .item .d{font-size:12px;color:var(--text-secondary);margin-top:3px;word-break:break-word}
 .item .m{font-size:11.5px;color:var(--muted);margin-top:5px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
 .item .acts{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+/* 倒计时列表里「待办 / 已完成」之间那道分隔 */
+.cd-sep{font-size:11px;font-weight:650;color:var(--muted);margin:12px 0 8px;
+  padding-top:9px;border-top:1px solid var(--border)}
 
 /* 进度条 */
 .bar{height:7px;background:var(--chip);border-radius:4px;overflow:hidden;margin-top:8px;
@@ -189,6 +192,11 @@ details[open] summary{margin-bottom:11px}
   background:var(--chip);color:var(--text-secondary);border:1px solid var(--border);white-space:nowrap}
 .pill.ok{color:var(--good);border-color:var(--good)}
 .pill.bad{color:var(--critical);border-color:var(--critical)}
+/* 快到期（3 天内）。**不能**写 color:var(--warning) —— 那支黄在浅色底上只有
+   1.84:1，等于看不见。黄只用在描边和底纹上，字仍走主文字色，颜色只是辅助，
+   真正的信息在药丸里的那句「还剩 2 天」里。 */
+.pill.warn{color:var(--text-primary);border-color:var(--warning);
+  background:color-mix(in srgb, var(--warning) 22%, var(--chip))}
 
 .empty{color:var(--muted);font-size:12.5px;padding:14px 0;text-align:center}
 
@@ -316,8 +324,12 @@ details[open] summary{margin-bottom:11px}
 .mo-d.blank{background:none;border-color:transparent}
 .mo-d .dn{font-size:12px;font-weight:600;color:var(--text-secondary);line-height:1.2}
 .mo-d .dm{position:absolute;top:4px;right:6px;font-size:12px;line-height:1}
-/* 那天考的试：跟在日期下面一行，小一号。深色格子上跟着日期一起提亮 */
-.mo-d .de{font-size:10.5px;font-weight:650;letter-spacing:-.01em;
+/* 那天考的试 / 那天到期的倒计时：跟在日期下面一行，小一号。
+   两个标记放进同一个 flex 行里（考 左、截 右），窄格子上换行而不是互相压住 ——
+   格子最窄只有 36px 宽（390px 屏），绝对定位到右下角会和件数数字叠在一起。 */
+.mo-d .drow{display:flex;gap:5px;align-items:baseline;flex-wrap:wrap;min-width:0}
+.mo-d .de,
+.mo-d .dl{font-size:10.5px;font-weight:650;letter-spacing:-.01em;
   color:var(--text-secondary);line-height:1.25;white-space:nowrap}
 .mo-d .dc{margin-top:auto;font-size:16px;font-weight:650;letter-spacing:-.02em}
 .mo-d.lv1{background:color-mix(in srgb, var(--series-1) 12%, var(--surface-1))}
@@ -330,7 +342,9 @@ details[open] summary{margin-bottom:11px}
 .mo-d.lv2 .dn,
 .mo-d.lv3 .dn,
 .mo-d.lv2 .de,
-.mo-d.lv3 .de{color:var(--text-primary)}
+.mo-d.lv3 .de,
+.mo-d.lv2 .dl,
+.mo-d.lv3 .dl{color:var(--text-primary)}
 
 /* 图例里的色阶块，和格子用同一套混色，改一处两边一起变 */
 .legend .kd{width:14px;height:14px;border-radius:5px;flex:0 0 auto;
@@ -338,8 +352,11 @@ details[open] summary{margin-bottom:11px}
 .legend .kd.lv1{background:color-mix(in srgb, var(--series-1) 12%, var(--surface-1))}
 .legend .kd.lv2{background:color-mix(in srgb, var(--series-1) 26%, var(--surface-1))}
 .legend .kd.lv3{background:color-mix(in srgb, var(--series-1) 42%, var(--surface-1))}
-/* 考试标记不是色阶的一档，用虚线描边 + 不填色区分：不靠颜色也能认出是另一类 */
-.legend .kd.exam{background:none;border:1px dashed var(--text-secondary)}
+/* 「考」「截」标记不是色阶的一档，用虚线描边 + 不填色 + 里面写同一个字的方块表示：
+   图例里看到的和格子上看到的是同一个字，不靠颜色也能对上。 */
+.legend .kd.lbl{background:none;border:1px dashed var(--text-secondary);width:auto;
+  min-width:14px;padding:0 3px;display:inline-flex;align-items:center;justify-content:center;
+  font-size:10px;font-weight:650;color:var(--text-secondary);line-height:1}
 
 /* ══════════════════════════════════════════════════════════════
    今日完成情况：选「属于哪个大任务」的 chip
@@ -409,7 +426,9 @@ details[open] summary{margin-bottom:11px}
   .mo-head,.mo-grid{gap:4px}
   .mo-d{min-height:46px;padding:4px;border-radius:7px}
   .mo-d .dc{font-size:13px}
-  .mo-d .de{font-size:9px}
+  .mo-d .de,
+  .mo-d .dl{font-size:9px}
+  .mo-d .drow{gap:3px}
   .mo-d .dm{font-size:10px;top:3px;right:4px}
   .ov-nm{flex-basis:40%}
   .ov-v{min-width:46px}

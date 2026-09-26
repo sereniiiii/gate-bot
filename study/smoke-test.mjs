@@ -102,11 +102,29 @@ globalThis.Image = class {
 
 /* ── 假 Supabase ────────────────────────────────────────────── */
 const ME = 'me-uuid', OT = 'other-uuid';
+
+/* 倒计时的截止日按「今天」算，不写死日期 ——
+   写死的话「还剩 2 天」这类断言换一天跑就全红。 */
+function isoOff(n) {
+  const t = new Date();
+  const dt = new Date(t.getFullYear(), t.getMonth(), t.getDate() + n);
+  const p = (x) => String(x).padStart(2, '0');
+  return dt.getFullYear() + '-' + p(dt.getMonth() + 1) + '-' + p(dt.getDate());
+}
+const D2 = isoOff(2), D0 = isoOff(0), DM1 = isoOff(-1), DM5 = isoOff(-5), DM9 = isoOff(-9);
+
 const DB = {
   profiles: [{ id: ME, display_name: '小 A', avatar: '' }, { id: OT, display_name: '小 B', avatar: '' }],
+  /* goals 装两种东西：**没有 due_date 的**是以前的 30 天小目标，
+     **有 due_date 的**是倒计时（页面主位）。每一行都得带 due_date 这个 key ——
+     真库里 select('*') 会给所有行带上（值是 null 也带 key），假库要照做，
+     否则 S.cdNoCol 会误判成「库里没这一列」。 */
   goals: [
-    { id: 'g1', owner: ME, period_start: '2026-09-01', title: '背完 300 个单词', detail: '每天 10 个', target: 300, progress: 120, done: false, done_at: null, created_at: '2026-09-01T00:00:00Z' },
-    { id: 'g2', owner: OT, period_start: '2026-09-10', title: '读完一本书', detail: '', target: 100, progress: 100, done: true, done_at: '2026-09-20T10:00:00Z', created_at: '2026-09-10T00:00:00Z' },
+    { id: 'g1', owner: ME, period_start: '2026-09-01', title: '背完 300 个单词', detail: '每天 10 个', target: 300, progress: 120, done: false, done_at: null, due_date: null, created_at: '2026-09-01T00:00:00Z' },
+    { id: 'g2', owner: OT, period_start: '2026-09-10', title: '读完一本书', detail: '', target: 100, progress: 100, done: true, done_at: '2026-09-20T10:00:00Z', due_date: null, created_at: '2026-09-10T00:00:00Z' },
+    { id: 'g3', owner: ME, period_start: '2026-09-20', title: '交开题报告', detail: '交到研究生院系统', target: 1, progress: 0, done: false, done_at: null, due_date: D2, created_at: '2026-09-20T00:00:00Z' },
+    { id: 'g4', owner: ME, period_start: '2026-09-15', title: '交实验数据', detail: '', target: 1, progress: 0, done: false, done_at: null, due_date: DM5, created_at: '2026-09-15T00:00:00Z' },
+    { id: 'g5', owner: OT, period_start: '2026-09-01', title: '预约答辩教室', detail: '', target: 1, progress: 1, done: true, done_at: DM9 + 'T10:00:00Z', due_date: DM9, created_at: '2026-09-01T00:00:00Z' },
   ],
   tasks: [
     { id: 't1', owner: ME, title: '学完线性代数', detail: '把 MIT 那门刷完', due_date: '2026-10-10', created_at: '2026-09-02T00:00:00Z' },
@@ -374,7 +392,11 @@ ok(resTbl && findAll(resTbl, (n) => n.tagName === 'TH').map((n) => n.textContent
 ok(findAll($('res-cols'), (n) => hasCls(n, 'item')).length > 0, '图表下面的资源列表渲染出来了');
 ok(btns($('res-cols'), '删除').length > 0, '资源卡片上有删除按钮');
 tabs[6].fire('click'); await tick();
-ok($('export-meta').textContent.includes('目标 2'), '导出统计：' + $('export-meta').textContent);
+ok($('export-meta').textContent.includes('目标 ' + DB.goals.length),
+  '导出统计：' + $('export-meta').textContent);
+ok($('export-meta').textContent.includes('倒计时 3'),
+  '导出统计里单列倒计时条数（它不是独立的表，是 goals 里 due_date 非空的部分）：' +
+  $('export-meta').textContent);
 
 /* ══════════════════════════════════════════════════════════════
    本轮新增：大任务可视化 + 月行程表
@@ -450,9 +472,17 @@ ok($('mo-grid').children.filter((c) => !c.className.includes('blank')).every((c)
   '8 月没有记录 → 一格都没上色');
 $('mo-nav').children[2].fire('click'); await tick();
 ok($('mo-nav').children[1].textContent.includes('9 月'), '点下月 → 回到 9 月');
-ok($('mo-legend').children.length === 5, '图例 4 档色阶 + 1 个考试标记，实际 ' + $('mo-legend').children.length);
+ok($('mo-legend').children.length === 6,
+  '图例 4 档色阶 + 考试标记 + 截止标记，实际 ' + $('mo-legend').children.length);
 ok($('mo-legend').children[1].textContent.includes('1–2 件'), '图例文案说清楚深浅代表什么');
 ok($('mo-legend').children[4].textContent.includes('考试'), '图例里单独说明了「考」这个标记');
+ok($('mo-legend').children[5].textContent.includes('倒计时'),
+  '图例第 6 项说明「截」这个标记：' + $('mo-legend').children[5].textContent);
+/* 图例里的方块要把那个字**写出来** —— 只有虚线框的话，
+   看的人对不上格子里那个「截」是什么意思 */
+const kdLbl = findAll($('mo-legend').children[5], (n) => /\blbl\b/.test(n.className))[0];
+ok(kdLbl && kdLbl.textContent === '截', '图例方块里写的就是格子里那个字，实际「' +
+  (kdLbl ? kdLbl.textContent : '(没有)') + '」');
 ok($('mo-table').textContent.includes('2026-09-21'), '表格视图列出 9/21');
 ok($('mo-table').textContent.includes('第 1-4 讲'), '表格视图写出那天做了什么');
 ok($('mo-table').textContent.includes('😄'), '表格视图带心情');
@@ -477,7 +507,7 @@ ok(cell(23).title.includes('心情 😄（状态不错）'), '日记那天的补
 ok($('mo-table').textContent.includes('108 / 120'), '表格视图也有考试那一列');
 ok($('mo-table').textContent.includes('期中数学'), '表格视图写出考的是什么');
 const headTxt = findAll($('mo-table'), (n) => n.tagName === 'TH').map((n) => n.textContent).join('/');
-ok(headTxt === '日期/完成/考试/心情/做了什么', '表格视图表头：' + headTxt);
+ok(headTxt === '日期/完成/考试/截止/心情/做了什么', '表格视图表头：' + headTxt);
 ok($('mo-table').textContent.includes('加了资源：线性代数应该这样学'), '表格视图里也有资源');
 ok($('mo-table').textContent.includes('心情补充：状态不错'), '日记的补充文字也带出来');
 /* 统计句要真的把别的表算进去：这个月 9/5–9/9 一共 5 个资源、9 月 3 场考试 */
@@ -487,6 +517,250 @@ ok($('mo-sub').textContent.includes('加了 5 个学习资源'), '统计句报�
    9/20 那场没出分，不能算进分母，也不能被当成 0 分拉低平均。 */
 ok($('mo-sub').textContent.includes('有满分的 2 场，折算下来平均 89.1%'),
   '平均分只算有满分的 2 场：' + $('mo-sub').textContent);
+
+/* ══════════════════════════════════════════════════════════════
+   倒计时：几月几号要完成什么（取代 30 天小目标当这一页的主位）
+   数据就是 goals 里 due_date 非空的行，不新开表 —— 见 setup-7-countdown.sql
+   ══════════════════════════════════════════════════════════════ */
+
+console.log('── 倒计时：列表 / 排序 / 还剩几天怎么说 ──');
+tabs[1].fire('click'); await tick();
+ok($('cd-warn').hidden === true, '库里已有 due_date 列 → 不提示去跑脚本');
+const cdItems = byCls($('cd-cols'), 'item');
+ok(cdItems.length === 3, '倒计时条目 3 条（g3 / g4 / g5），实际 ' + cdItems.length);
+/* 倒计时的行 period_start/target/progress 只是占位，绝不能被当成 30 天小目标
+   画成一条 0/1 的进度条 —— 那是这一页最容易串味的地方 */
+ok(!byCls($('goals-cols'), 'item').some((i) => i.textContent.includes('交开题报告')),
+  '倒计时不混进折叠区那张「30 天小目标」备忘录');
+ok(!$('goals-cols').textContent.includes('进度 0 / 1'), '备忘录里没有 0/1 的假进度条');
+
+const cdWho = byCls($('cd-cols'), 'who');
+ok(cdWho.length === 2, '倒计时也是双栏（两人各一栏）');
+ok(find(cdWho[0], (n) => hasCls(n, 'nm')).textContent === '小 A', '我那栏排前面');
+const meCd = byCls(cdWho[0], 'item');
+ok(meCd.length === 2, '我这栏 2 条（已完成的不算待办），实际 ' + meCd.length);
+ok(meCd[0].textContent.includes('交实验数据') && meCd[1].textContent.includes('交开题报告'),
+  '待办按截止日从近到远排 —— 已经过期的那条排在最前面：' +
+  meCd.map((i) => i.textContent.slice(0, 6)).join(' | '));
+const pillOf = (row) => byCls(row, 'pill')[0];
+ok(pillOf(meCd[0]).textContent === '已过期 5 天',
+  '过期 5 天 → 「已过期 5 天」，实际「' + pillOf(meCd[0]).textContent + '」');
+ok(hasCls(pillOf(meCd[0]), 'bad'), '过期 / 今天到期 → bad 药丸（红）');
+ok(pillOf(meCd[1]).textContent === '还剩 2 天',
+  '还剩 2 天 → 「还剩 2 天」，实际「' + pillOf(meCd[1]).textContent + '」');
+ok(hasCls(pillOf(meCd[1]), 'warn'), '3 天内到期 → warn 药丸');
+ok(meCd[1].textContent.includes('截止 ') && /周[日一二三四五六]/.test(meCd[1].textContent),
+  '每条都写出截止日（带星期几）：' + meCd[1].textContent);
+/* 颜色只是辅助。药丸里必须自己说出还剩几天 ——
+   色觉障碍、打印、强制配色下都要能读出来 */
+ok(/还剩|到期|过期/.test(pillOf(meCd[0]).textContent) &&
+   /还剩|到期|过期/.test(pillOf(meCd[1]).textContent),
+  '不靠颜色也能读出剩余天数，药丸里带着话');
+
+const otCd = byCls(cdWho[1], 'item');
+ok(otCd.length === 1, '对方那一栏也在（这一页看的是两人的共同进度）');
+ok(otCd[0].textContent.includes('预约答辩教室'), '对方已完成的那条也在');
+ok(hasCls(otCd[0], 'done'), '已完成的行变淡（.item.done）');
+const cdSep = find(cdWho[1], (n) => hasCls(n, 'cd-sep'));
+ok(cdSep && cdSep.textContent === '已完成', '已完成的那条落在「已完成」分隔线下面');
+ok(byCls(cdWho[0], 'cd-sep').length === 0, '没有已完成时不留一条空的分隔线');
+
+ok($('cd-sub').textContent.includes('待办 2 件'), '副标题报待办件数：' + $('cd-sub').textContent);
+ok($('cd-sub').textContent.includes('交实验数据'), '副标题点名最急的那一件');
+ok($('cd-sub').textContent.includes('已过期 5 天'), '副标题里也说了还剩几天');
+ok($('cd-sub').textContent.includes('已经完成 1 件'), '已完成的不算在待办里，单独报一句');
+
+console.log('── 倒计时落到月历上：「截」标记 ──');
+const dlOf = (d) => { const k = find(cell(d), (n) => hasCls(n, 'dl')); return k ? k.textContent : ''; };
+const cellOfIso = (iso) => (iso.startsWith('2026-09') ? cell(Number(iso.slice(8))) : null);
+/* 三个截止日都按「今天」算，跨月就可能不在当前显示的 9 月里 ——
+   那就不假造结果，明说跳过（和上面「今天」那段的做法一致） */
+if ([D2, DM5, DM9].every((s) => s.startsWith('2026-09'))) {
+  ok(dlOf(Number(D2.slice(8))) === '截', '还没完成的截止日那天，格子里标「截」');
+  ok(dlOf(Number(DM5.slice(8))) === '截', '过期未完成的也照样标出来（要能看见欠着的事）');
+  ok(dlOf(Number(DM9.slice(8))) === '',
+    '已经完成的那条不再标「截」—— 那天只会以「完成」的身份出现');
+  ok(cellOfIso(DM9).title.includes('完成目标：预约答辩教室'), '完成了就归到「完成目标」那一栏');
+  ok(cellOfIso(D2).title.includes('截止：交开题报告'),
+    '那天的悬停明细里写了截止的是什么：' +
+    (cellOfIso(D2).title.split('\n').filter((s) => s.startsWith('截止'))[0] || '(没有)'));
+  ok(!/\blv\d\b/.test(cellOfIso(D2).className),
+    '只有截止日的那天不上色 —— 深浅口径仍只由「完成」决定，没被截止日污染');
+  ok(findAll(cellOfIso(D2), (n) => hasCls(n, 'dc')).length === 0,
+    '只有截止日 → 不冒出件数数字（右下角仍是空的）');
+  ok($('mo-sub').textContent.includes('另有 2 件事在这个月到期'),
+    '统计句报了这个月有几个截止日（已完成的不算）：' + $('mo-sub').textContent);
+  ok($('mo-table').textContent.includes('交开题报告'), '表格视图里也有「截止」那一列的内容');
+} else {
+  console.log('  ⏭  倒计时的截止日不在 2026-09，跳过月历相关断言（不假造结果）');
+}
+
+console.log('── 倒计时：加一条 ──');
+ok($('cd-due').value === isoOff(7),
+  '截止日默认填今天 + 7 天，省一次点日历：' + $('cd-due').value);
+/* 从统计句里把两个数字抠出来对账：加一条截止日**不该**让那天变成「有记录的一天」
+   （有记录 = 完成/推进/考试/资源/心情，截止日不在这个口径里）。
+   不写死具体数字，比的是加之前和加之后的差 —— 换一天跑也不会飘。 */
+const daysActive = () => Number((/有 (\d+) 天有记录/.exec($('mo-sub').textContent) || [null, 0])[1]);
+const nDueText = () => Number((/另有 (\d+) 件事在这个月到期/.exec($('mo-sub').textContent) || [null, 0])[1]);
+const active0 = daysActive(), due0 = nDueText();
+/* 按需求里那句「什么都不要问我，做出来再让我知道」，加的时候只要标题 + 日期，
+   说明留空也能加 */
+async function addCd(title, due) {
+  $('cd-title').value = title;
+  $('cd-detail').value = '';
+  $('cd-due').value = due;
+  $('cd-add').fire('click');
+  await tick(); await tick(); await tick();
+}
+await addCd('临时·明天要交的', isoOff(1));
+ok(daysActive() === active0,
+  '只加一个截止日，那天**不**算成「有记录的一天」：' + active0 + ' → ' + daysActive());
+if (isoOff(1).startsWith('2026-09')) {
+  ok(nDueText() === due0 + 1, '统计句里的截止日数跟着 +1：' + due0 + ' → ' + nDueText());
+}
+const gNew = DB.goals.find((g) => g.title === '临时·明天要交的');
+ok(!!gNew, '写进了 goals 表（没新开 countdowns 表）');
+ok(gNew.due_date === isoOff(1), 'due_date 记的是截止日：' + (gNew && gNew.due_date));
+ok(gNew.period_start === isoOff(0),
+  'period_start 拿今天占位（那一列 not null，页面不显示它）：' + (gNew && gNew.period_start));
+ok(gNew.target === 1 && gNew.progress === 0 && gNew.done === false,
+  '其余占位列：target 1 / progress 0 / 未完成');
+ok($('cd-title').value === '', '加完把标题输入框清掉，方便接着加下一条');
+
+/* 同一天到期两件事：格子里放不下两个「截」，要压成「截×2」 */
+await addCd('临时·同天到期的另一件', isoOff(1));
+if (isoOff(1).startsWith('2026-09')) {
+  ok(dlOf(Number(isoOff(1).slice(8))) === '截×2',
+    '同一天到期两件事 → 格子里写「截×2」，实际「' + dlOf(Number(isoOff(1).slice(8))) + '」');
+  ok(cellOfIso(isoOff(1)).title.includes('截止：临时·明天要交的') &&
+     cellOfIso(isoOff(1)).title.includes('截止：临时·同天到期的另一件'),
+    '两件都在悬停明细里，一件不少');
+}
+btns(byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·同天到期的另一件')), '删除')[0]
+  .fire('click'); await tick(); await tick();
+ok(!DB.goals.some((g) => g.title === '临时·同天到期的另一件'), '（清掉这条同天到期的）');
+
+const newRow = byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·明天要交的'));
+ok(!!newRow, '加完立刻出现在列表里（不用手动刷新）');
+ok(byCls(newRow, 'pill')[0].textContent === '明天到期',
+  '明天到期 → 「明天到期」，实际「' + (newRow ? byCls(newRow, 'pill')[0].textContent : '') + '」');
+
+await addCd('临时·今天要交的', isoOff(0));
+const row0 = byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·今天要交的'));
+ok(byCls(row0, 'pill')[0].textContent === '今天到期',
+  '今天到期 → 「今天到期」，实际「' + (row0 ? byCls(row0, 'pill')[0].textContent : '') + '」');
+ok(hasCls(byCls(row0, 'pill')[0], 'bad'), '今天到期算最急的一档（bad）');
+
+await addCd('临时·昨天该交的', DM1);
+const rowM1 = byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·昨天该交的'));
+ok(byCls(rowM1, 'pill')[0].textContent === '昨天到期',
+  '过期 1 天 → 「昨天到期」而不是「已过期 1 天」（说人话）：' +
+  (rowM1 ? byCls(rowM1, 'pill')[0].textContent : ''));
+
+/* 空标题拦下来，别在库里留一条认不出来的记录 */
+const nGoalsBefore = DB.goals.length;
+$('cd-title').value = '   ';
+$('cd-add').fire('click'); await tick(); await tick();
+ok(DB.goals.length === nGoalsBefore, '只写了空格 → 不写库');
+ok($('toast').textContent.includes('先写要完成什么'), '并说清楚缺什么：' + $('toast').textContent);
+
+console.log('── 倒计时：点「完成」 ──');
+const doneRow = byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·昨天该交的'));
+btns(doneRow, '完成')[0].fire('click'); await tick(); await tick();
+const gDone = DB.goals.find((g) => g.title === '临时·昨天该交的');
+ok(gDone && gDone.done === true, '点「完成」真的把 done 写上了');
+ok(gDone && typeof gDone.done_at === 'string', 'done_at 也写了（月历靠它归日）');
+ok(byCls($('cd-cols'), 'cd-sep').length >= 1, '完成后挪到「已完成」那一段下面去');
+/* 完成后不再提醒：那天在月历上只以「完成」的身份出现，不该还挂着「截」 */
+if (DM1.startsWith('2026-09') && DM9.startsWith('2026-09')) {
+  ok(find(cellOfIso(DM1), (n) => hasCls(n, 'dl')) === null &&
+     find(cellOfIso(DM9), (n) => hasCls(n, 'dl')) === null,
+    '刚完成的那条也不再标「截」');
+}
+ok($('cd-cols').textContent.includes('临时·昨天该交的'), '完成后整页重画没抛错');
+
+console.log('── 倒计时：删除 ──');
+const delRow = byCls($('cd-cols'), 'item').find((i) => i.textContent.includes('临时·明天要交的'));
+btns(delRow, '删除')[0].fire('click'); await tick(); await tick();
+ok(!DB.goals.some((g) => g.title === '临时·明天要交的'), '点「删除」真的删掉了那一行');
+ok(!$('cd-cols').textContent.includes('临时·明天要交的'), '删完列表里也没了');
+
+/* 收尾：把这一节临时加的倒计时清掉，别影响后面的用例 */
+DB.goals = DB.goals.filter((g) => !g.title.startsWith('临时·'));
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('cd-cols').textContent.includes('交开题报告'), '收尾后回到 3 条基准数据');
+
+/* setup-7-countdown.sql 还没跑：goals 表里根本没有 due_date 这一列。
+   要求：① 说清楚去跑哪个脚本，不甩 Postgres 原文；② 不静默失败；
+   ③ **别的页签照常**（列不存在只影响这一块）；
+   ④ 导入时把这一列剥掉再写 —— 带着它整批会被拒，连累同批的旧目标。 */
+console.log('── 倒计时：setup-7 还没跑时怎么办 ──');
+failNext = 'column "due_date" does not exist';
+$('cd-title').value = '临时·列还没建时写的';
+$('cd-due').value = isoOff(3);
+$('cd-add').fire('click'); await tick(); await tick();
+ok($('cd-warn').hidden === false, '写失败 → 冒出提示条，而不是静默什么都没发生');
+ok($('cd-warn').textContent.includes('setup-7-countdown.sql'), '提示直接指向要跑哪个脚本');
+ok($('toast').textContent.includes('setup-7-countdown.sql'),
+  '没把 Postgres 原文甩给她：' + $('toast').textContent);
+ok(!DB.goals.some((g) => g.title.startsWith('临时·列还没建')), '那一行没写进库');
+ok($('cd-cols').textContent.includes('交开题报告'), '这一块降级了，但已有的内容照常看得见');
+
+const snapCd = {
+  app: 'study-collab', version: 1,
+  data: { goals: [
+    { id: 'imp-cd', owner: ME, period_start: '2026-09-01', title: '导入的倒计时', detail: '',
+      target: 1, progress: 0, done: false, done_at: null, due_date: '2026-10-01' },
+  ] },
+};
+$('file-import').fire('change', { target: { files: [{ text: async () => JSON.stringify(snapCd) }] } });
+await tick(); await tick();
+const impCd = DB.goals.find((g) => g.id === 'imp-cd');
+ok(!!impCd, '带 due_date 的那行还是导进去了（剥掉那一列，而不是整行丢掉）');
+ok(impCd && !('due_date' in impCd), 'due_date 被剥掉了，否则整批会被 PostgREST 拒掉');
+ok($('import-meta').textContent.includes('setup-7-countdown.sql'),
+  '并且说清楚哪一列没导、要跑哪个脚本：' + $('import-meta').textContent);
+
+/* 跑完脚本（这里是把钩子放掉）后恢复正常 */
+DB.goals = DB.goals.filter((g) => g.id !== 'imp-cd');
+$('cd-title').value = '';
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('cd-warn').hidden === true, '刷新后（列在了）提示条自己收起来');
+ok(byCls($('cd-cols'), 'item').length === 3, '恢复正常，仍是 3 条');
+
+/* 上面那一段是「写的时候才发现列不在」。
+   还得能**只靠读**就看出来 —— 否则她点刷新时页面假装一切正常，
+   非得等她填完一条、点下去，才知道要去跑脚本。 */
+const savedDue = DB.goals.map((g) => g.due_date);
+DB.goals.forEach((g) => { delete g.due_date; });
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('cd-warn').hidden === false, '刷新时读到的数据里没有这一列 → 主动提示，不等她写一次才发现');
+ok($('cd-warn').textContent.includes('setup-7-countdown.sql'), '提示指向要跑哪个脚本');
+ok($('cd-sub').textContent.includes('还没有倒计时任务'), '这一块降级成空态，不假装有数据');
+ok(byCls($('cd-cols'), 'item').length === 0, '一条倒计时都不画');
+DB.goals.forEach((g, i) => { g.due_date = savedDue[i]; });
+$('btn-refresh').fire('click'); await tick(); await tick();
+ok($('cd-warn').hidden === true, '列回来之后提示自己收起来');
+
+console.log('── 倒计时：主页那边也跟着说人话 ──');
+tabs[0].fire('click'); await tick();
+ok($('home-people').textContent.includes('倒计时'), '主页人物卡里单列一块「倒计时」');
+ok($('home-people').textContent.includes('待办 2 / 2 件'),
+  '每人一张卡，各报各的「待办 / 总数」（我 2/2、对方 0/1）：' +
+  $('home-people').textContent.slice(0, 130));
+ok($('home-people').textContent.includes('已过期 5 天'), '卡片上点名最急的那件还剩几天');
+ok($('home-people').textContent.includes('全部完成'), '一条待办都没有的那栏说的是「全部完成」，不是「还没建」');
+/* 旧的 30 天小目标和倒计时都是 goals 表的行，卡片上必须分开算 ——
+   混在一起的话倒计时那条 0/1 的占位进度会把「累计」压得没法看 */
+ok($('home-people').textContent.includes('30 天小目标'), '旧的 30 天小目标另算一块，不跟倒计时混在一起');
+ok($('home-people').textContent.includes('累计 '),
+  '30 天小目标那块仍按 progress/target 累计：' + $('home-people').textContent.slice(0, 200));
+ok($('home-entries').textContent.includes('倒计时'), '主页入口卡的说明也提了倒计时');
+/* 动态流里两种目标说法不一样 —— 别把「交开题报告」说成「累计 1 / 1」 */
+ok($('feed').textContent.includes('完成了倒计时任务'), '动态流里说「完成了倒计时任务」');
+ok($('feed').textContent.includes('完成了 30 天目标'), '旧的 30 天小目标那条文案没被改坏');
+tabs[1].fire('click'); await tick();
 
 /* ══════════════════════════════════════════════════════════════
    本轮新增：今日完成情况

@@ -72,6 +72,9 @@
     exSubject: '',
     exEdit: null,
     exNoTable: false,     // 库里还没建 exams 表时置位（setup-6-exams.sql 跑之前）
+    /* 倒计时。条目就是 goals 表里 due_date 非空的行（不新开表，见 setup-7-countdown.sql）。
+       cdNoCol = 库里还没有 due_date 那一列时置位（setup-7 跑之前）。 */
+    cdNoCol: false,
   };
 
   /* ── 小工具 ────────────────────────────────────────────────── */
@@ -119,7 +122,9 @@
    pushes（推进未完成）、考试、资源只进悬停明细、表格视图和统计句，不点亮格子。 */
   function dayStats() {
     const m = {};
-    const slot = (k) => (m[k] || (m[k] = { subs: [], goals: [], pushes: [], exams: [], res: [], log: null }));
+    const slot = (k) => (m[k] || (m[k] = {
+      subs: [], goals: [], pushes: [], exams: [], res: [], due: [], log: null,
+    }));
     for (const x of S.subtasks) {
       if (isTwinEcho(x)) continue;        // 绑着的两条是同一件事，只算一次
       const k = isoDate(x.done_at);
@@ -128,9 +133,14 @@
       else slot(k).pushes.push(x);        // 记了「今天推进了」但还没完成
     }
     for (const g of S.goals) {
-      if (!g.done) continue;
-      const k = isoDate(g.done_at);
-      if (k) slot(k).goals.push(g);
+      if (g.done) {
+        const k = isoDate(g.done_at);
+        if (k) slot(k).goals.push(g);
+      } else if (g.due_date) {
+        /* 还没完成的倒计时：标在**截止日**那一格（不是完成日）。
+           完成了就不再提醒 —— 那天会以「完成」的身份出现在它自己的格子里。 */
+        slot(g.due_date).due.push(g);
+      }
     }
     /* 成绩：exam_date 是 date 列，PostgREST 直接给 'YYYY-MM-DD' 纯文本，
        拿它当键就行 —— 反而是过一遍 new Date() 会被时区带偏一天。 */
@@ -162,6 +172,10 @@
     const s = list[0].score;
     return (s === null || s === undefined || s === '') ? '考' : '考' + fmtNum(s);
   }
+
+  /* 格子右下角的截止日小标记：只有「还没完成、截止日在这天」的倒计时才标。
+     不写还剩几天 —— 格子里放不下，而且那天本身就是答案。 */
+  const dueMark = (list) => (!list.length ? '' : list.length > 1 ? '截×' + list.length : '截');
 
   /* 判断一个值是不是 DOM 节点。真假 DOM 都能认：真节点有 nodeType，
      假 DOM（smoke-test）的 El 两个都有。 */
@@ -375,6 +389,10 @@
     S.subtasks  = res[3].data || [];
     S.daily     = res[4].data || [];
     S.resources = res[5].data || [];
+    /* 倒计时的 due_date 搭 goals 这条车就回来了，不用多发一次请求：
+       列在的话 select('*') 会把 due_date 带出来（值是 null 也带 key）。
+       一行目标都没有时判断不了 —— 那就等真去写的时候报错再说（schemaWarn）。 */
+    S.cdNoCol = S.goals.length > 0 && !S.goals.some((g) => 'due_date' in g);
     await loadExams();          // 单独一条，失败不影响上面任何一张表
   }
 
@@ -428,6 +446,10 @@
     }
     if (/link_id/i.test(m)) {
       return '库里还没有「绑成同一件事」这一列。去 Supabase 后台跑一次 study/setup-5-link.sql 再回来。';
+    }
+    /* 列不存在时 PostgREST 说的是 "Could not find the 'due_date' column of 'goals' …" */
+    if (/due_date/i.test(m)) {
+      return '库里还没有「截止日」这一列。去 Supabase 后台跑一次 study/setup-7-countdown.sql 再回来。';
     }
     /* 表整个不存在时 PostgREST 说的是 "Could not find the table 'public.exams'
        in the schema cache" —— 别把原文甩给她。 */
@@ -553,17 +575,167 @@
 
   function emptyNote(txt) { return h('div', { class: 'empty', text: txt }); }
 
-  /* ── 页签一：月度任务（主位：月度任务视图  下面：目标备忘录）──────
-     这一页的主位是「这个月做了什么」那张日历，其他表当月更新的东西都同步进来；
-     30 天小目标（Memo）降成下面一块 —— 它是月视图的一路输入，不是这一页的全部。 */
+  /* ── 页签一：月度任务（主位：倒计时 + 月度任务视图  下面：旧的目标备忘录）──
+     这一页的主位是「几月几号要完成什么」（倒计时）和「这个月做了什么」（日历）；
+     30 天小目标（Memo）折到最底下 —— 它是月视图的一路输入，不是这一页的全部。 */
   function renderGoals() {
+    renderCountdown();
     renderGoalMemo();
     renderMonth();
   }
 
-  /* 目标备忘录：两人各自的 30 天小目标 + 进度条 */
+  /* ── 倒计时：几月几号要完成什么 ──────────────────────────────
+     数据就是 goals 表里 due_date 非空的行（不新开表，见 setup-7-countdown.sql）。
+     没跑那个 SQL 时 S.cdNoCol 为真 —— 只提示、不假装能存。
+     排序刻意分两段：未完成的按截止日**从近到远**在最上面（要盯的先看到），
+     已完成的按完成时间倒序跟在后面（最近的战果在上），中间加一条分隔线。
+     未完成的不显示进度条 —— 倒计时任务的「进度」永远是 0/1，画出来是噪音。 */
+  function renderCountdown() {
+    const warn = $('cd-warn');
+    warn.hidden = !S.cdNoCol;
+    if (S.cdNoCol) {
+      warn.textContent = '库里还没有「截止日」这一列（due_date）。去 Supabase 后台 → SQL Editor，'
+        + '跑一次 study/setup-7-countdown.sql，再回来点「刷新」。在那之前这一页存不了倒计时。';
+    }
+    if (!$('cd-due').value) $('cd-due').value = addDays(today(), 7);
+
+    const all = S.goals.filter((g) => g.due_date);
+    const open = all.filter((g) => !g.done);
+    const shut = all.filter((g) => g.done);
+
+    // 一句话总览：最近那个截止日是哪天、还剩几天
+    if (!all.length) {
+      $('cd-sub').textContent = '还没有倒计时任务。写上「几月几号要完成什么」，'
+        + '它会自动出现在上面的月历格子里（标「截」），也会按剩余天数排在最前面。';
+    } else if (!open.length) {
+      $('cd-sub').textContent = '当前 ' + shut.length + ' 件事全部完成，没有待办的截止日。'
+        + '再加一件就在下面。';
+    } else {
+      /* 排最前的那条未必是「未来最近的」，也可能是已经欠着的 ——
+         所以说的是「最急」而不是「最近」。 */
+      const next = open.slice().sort((a, b) => (a.due_date < b.due_date ? -1 : 1))[0];
+      const n = daysFromToday(next.due_date);
+      $('cd-sub').textContent = '待办 ' + open.length + ' 件，最急的是「'
+        + (next.title || '(无标题)') + '」——' + dateText(next.due_date) + '，'
+        + cdLeftText(n) + '。'
+        + (shut.length ? '已经完成 ' + shut.length + ' 件。' : '');
+    }
+
+    twoCols($('cd-cols'), all, (owner, list, mine) => {
+      if (!list.length) {
+        return emptyNote(mine
+          ? '你还没有倒计时任务，上面加一个（填标题 + 截止日就行）。'
+          : '对方还没添加倒计时任务。');
+      }
+      const todo = list.filter((g) => !g.done)
+        .sort((a, b) => (a.due_date < b.due_date ? -1 : a.due_date > b.due_date ? 1 : 0));
+      const done = list.filter((g) => g.done)
+        .sort((a, b) => String(b.done_at || '').localeCompare(String(a.done_at || '')));
+
+      const wrap = h('div');
+      for (const g of todo) {
+        const n = daysFromToday(g.due_date);
+        wrap.appendChild(
+          h('div', { class: 'item' },
+            h('div', { class: 't' },
+              h('span', { class: 'grow', text: g.title }),
+              cdPill(n)
+            ),
+            g.detail ? h('div', { class: 'd', text: g.detail }) : null,
+            h('div', { class: 'bar-txt' },
+              h('span', { text: '截止 ' + dateText(g.due_date) })
+            ),
+            mine ? h('div', { class: 'acts' },
+              h('button', {
+                class: 'tiny', text: '完成',
+                onclick: () => commit(
+                  setDone('goals', g.id, true, { progress: g.target || 1 }),
+                  '完成了倒计时任务「' + (g.title || '') + '」'),
+              }),
+              h('button', {
+                class: 'tiny danger', text: '删除',
+                onclick: () => removeRow('goals', g.id, '倒计时任务「' + g.title + '」'),
+              })
+            ) : null
+          )
+        );
+      }
+      if (done.length) {
+        wrap.appendChild(h('div', { class: 'cd-sep', text: '已完成' }));
+        for (const g of done) {
+          wrap.appendChild(
+            h('div', { class: 'item done' },
+              h('div', { class: 't' },
+                h('span', { class: 'grow', text: g.title }),
+                h('span', { class: 'pill ok', text: '已完成' })
+              ),
+              g.detail ? h('div', { class: 'd', text: g.detail }) : null,
+              h('div', { class: 'bar-txt' },
+                h('span', { text: '截止 ' + dateText(g.due_date) +
+                  (g.done_at ? '，' + isoDate(g.done_at) + ' 完成' : '') })
+              ),
+              mine ? h('div', { class: 'acts' },
+                h('button', {
+                  class: 'tiny', text: '取消完成',
+                  onclick: () => commit(setDone('goals', g.id, false), '已取消完成标记'),
+                }),
+                h('button', {
+                  class: 'tiny danger', text: '删除',
+                  onclick: () => removeRow('goals', g.id, '倒计时任务「' + g.title + '」'),
+                })
+              ) : null
+            )
+          );
+        }
+      }
+      return wrap;
+    });
+  }
+
+  /* 还剩几天 —— 说人话，不说「剩余 0 天」这种要翻译的句子 */
+  function cdLeftText(n) {
+    if (n > 1) return '还剩 ' + n + ' 天';
+    if (n === 1) return '明天到期';
+    if (n === 0) return '今天到期';
+    if (n === -1) return '昨天到期';
+    return '已过期 ' + (-n) + ' 天';
+  }
+
+  /* 日期状态的药丸。颜色只是辅助 —— 药丸里永远带着话，色觉障碍下也读得出。
+     warning 那档特意用「黄边 + 主文字色」而不是黄字：黄字在浅色底上对比度不够。 */
+  function cdPill(n) {
+    const cls = n <= 1 ? 'pill bad' : n <= 3 ? 'pill warn' : 'pill';
+    return h('span', { class: cls, text: cdLeftText(n) });
+  }
+
+  /* 加一条倒计时。goals 表的 period_start 是 not null，这儿拿今天占位 ——
+     页面不显示它（那是 30 天小目标周期用的），只是为了满足约束。 */
+  async function addCountdown() {
+    const title = $('cd-title').value.trim();
+    if (!title) { toast('先写要完成什么', true); return; }
+    const due = $('cd-due').value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) { toast('选一个截止日', true); return; }
+    const { error } = await sb.from('goals').insert({
+      owner: S.me.id, title: title, detail: $('cd-detail').value.trim(),
+      due_date: due, period_start: today(), target: 1, progress: 0, done: false,
+    });
+    if (error) {
+      if (/due_date/i.test(error.message)) S.cdNoCol = true;   // 下次刷新前就知道列没建
+      toast(schemaWarn(error), true);
+      renderCountdown();
+      return;
+    }
+    $('cd-title').value = '';
+    $('cd-detail').value = '';
+    toast('加上了，' + dateText(due) + '截止');
+    await refresh();
+  }
+
+  /* 目标备忘录：两人各自的 30 天小目标 + 进度条。
+     **只收没有 due_date 的** —— goals 表现在还装着倒计时，
+     那些行的 period_start/target/progress 只是占位，混进来会画出一条 0/1 的假进度条。 */
   function renderGoalMemo() {
-    twoCols($('goals-cols'), S.goals, (owner, rows, mine) => {
+    twoCols($('goals-cols'), S.goals.filter((g) => !g.due_date), (owner, rows, mine) => {
       if (!rows.length) return emptyNote(mine ? '还没有目标，上面加一个。' : '对方还没添加目标。');
       const wrap = h('div');
       for (const g of rows) {
@@ -614,7 +786,8 @@
   /* 一格一天。这一页不只看目标：其他表在当月更新的东西都同步到这儿。
      格子深浅 + 右下角数字 = 那天**完成**了几件事（小任务 + 目标）；
      左上角下面一行 = 那天考的试（「考108」/「考」/「考×2」）；
-     右上角小表情 = 那天记了心情。
+     右上角小表情 = 那天记了心情；
+     右下角「截」= 那天有**还没完成**的倒计时任务到期。
      「推进未完成」、加的学习资源、当天写的那两句，不占格子（放不下），
      但悬停明细和下面的表格视图里一条不少。
      数据每次现算，所以在别处勾完任务、或对方那边实时推过来，这里都会跟着变。 */
@@ -635,7 +808,7 @@
     MO_WEEK.forEach((w) => head.appendChild(h('span', { text: w })));
 
     let nSub = 0, nGoal = 0, nLog = 0, nActive = 0;
-    let nPush = 0, nExam = 0, nRes = 0, nScored = 0, scGot = 0, scFull = 0;
+    let nPush = 0, nExam = 0, nRes = 0, nScored = 0, scGot = 0, scFull = 0, nDue = 0;
     const grid = $('mo-grid');
     clear(grid);
 
@@ -652,6 +825,7 @@
         nGoal += e.goals.length;
         nPush += e.pushes.length;
         nRes += e.res.length;
+        nDue += e.due.length;
         if (e.log) nLog++;
         for (const ex of e.exams) {
           nExam++;
@@ -674,6 +848,7 @@
           bits.push('推进未完成：' + (x.title || '(未填写)') + ' —— ' + parentLabel(x));
         });
         e.exams.forEach((ex) => bits.push('考试：' + examLine(ex)));
+        e.due.forEach((g) => bits.push('截止：' + (g.title || '(无标题)')));
         e.res.forEach((r) => bits.push('加了资源：' + (r.name || '(未命名)') + '（' +
           (KIND_LABEL[r.kind] || '资源') + '）'));
         if (e.log) {
@@ -684,12 +859,16 @@
       }
 
       const mark = e ? examMark(e.exams) : '';
+      const dMark = e ? dueMark(e.due) : '';
       grid.appendChild(h('div', {
         class: 'mo-d' + (lv ? ' lv' + lv : '') + (key === t ? ' today' : ''),
         title: key + '\n' + (bits.length ? bits.join('\n') : '这天没有记录'),
       },
         h('span', { class: 'dn', text: String(day) }),
-        mark ? h('span', { class: 'de', text: mark }) : null,
+        mark || dMark ? h('span', { class: 'drow' },
+          mark ? h('span', { class: 'de', text: mark }) : null,
+          dMark ? h('span', { class: 'dl', text: dMark }) : null
+        ) : null,
         e && e.log ? h('span', { class: 'dm', text: MOODS[e.log.mood - 1] || '' }) : null,
         n ? h('span', { class: 'dc', text: String(n) }) : null
       ));
@@ -720,6 +899,7 @@
       (nPush ? '，另有 ' + nPush + ' 步只推进未完成' : '') + '；' +
       (nExam ? '考了 ' + nExam + ' 场试' + avgTxt + '；' : '') +
       (nRes ? '加了 ' + nRes + ' 个学习资源；' : '') +
+      (nDue ? '另有 ' + nDue + ' 件事在这个月到期（格子里标「截」）；' : '') +
       '有 ' + nActive + ' 天有记录，记了 ' + nLog + ' 天心情。';
 
     /* 没有 done_at 列时，已完成的旧记录没有时间戳，日历上会凭空少掉一截。
@@ -736,7 +916,7 @@
       warn.hidden = true;
     }
 
-    // 图例：深浅代表完成件数；考试是另一路的标记，用虚线块区分开，别混进色阶里
+    // 图例：深浅代表完成件数；「考」「截」是另外两路的标记，写成字符块，别混进色阶里
     const lg = $('mo-legend');
     clear(lg);
     [['无', null], ['1–2 件', 'lv1'], ['3–5 件', 'lv2'], ['6 件以上', 'lv3']].forEach(([txt, lv]) => {
@@ -746,8 +926,12 @@
       ));
     });
     lg.appendChild(h('span', { class: 'item2' },
-      h('span', { class: 'kd exam' }),
+      h('span', { class: 'kd lbl', text: '考' }),
       h('span', { text: '那天有考试（格子里的「考」+ 得分）' })
+    ));
+    lg.appendChild(h('span', { class: 'item2' },
+      h('span', { class: 'kd lbl', text: '截' }),
+      h('span', { text: '那天有倒计时任务到期（未完成的才算）' })
     ));
 
     renderMonthTable(dim, stats);
@@ -787,6 +971,7 @@
         key,
         dayCount(e) ? String(dayCount(e)) : '—',
         e.exams.length ? e.exams.map(examLine).join('；') : '—',
+        e.due.length ? e.due.map((g) => g.title || '(无标题)').join('；') : '—',
         e.log ? (MOODS[e.log.mood - 1] || '—') : '—',
         what.join('；') || '—',
       ]);
@@ -798,13 +983,13 @@
     const tbl = h('table');
     tbl.appendChild(h('thead', null, h('tr', null,
       h('th', { text: '日期' }), h('th', { text: '完成' }),
-      h('th', { text: '考试' }), h('th', { text: '心情' }),
-      h('th', { text: '做了什么' })
+      h('th', { text: '考试' }), h('th', { text: '截止' }),
+      h('th', { text: '心情' }), h('th', { text: '做了什么' })
     )));
     const tb = h('tbody');
     rows.forEach((r) => tb.appendChild(h('tr', null,
       h('td', { text: r[0] }), h('td', { text: r[1] }), h('td', { text: r[2] }),
-      h('td', { text: r[3] }), h('td', { text: r[4] })
+      h('td', { text: r[3] }), h('td', { text: r[4] }), h('td', { text: r[5] })
     )));
     tbl.appendChild(tb);
     box.appendChild(h('div', { class: 'tblwrap' }, tbl));
@@ -1684,9 +1869,9 @@
   }
 
   /* 9月20日 · 周六。库里是 date 字符串，别过 new Date() 再取本地日 ——
-     直接解析 'YYYY-MM-DD'，免得时区把它挪一天。 */
+     直接解析 'YYYY-MM-DD'，免得时区把它挪一天。考试的日期和倒计时的截止日共用它。 */
   const WD = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  function examDateText(iso) {
+  function dateText(iso) {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
     if (!m) return iso || '没填日期';
     const [, y, mo, d] = m.map(Number);
@@ -1750,7 +1935,7 @@
             examScoreEl(e)
           ),
           h('div', { class: 'm' },
-            h('span', { text: examDateText(e.exam_date) }),
+            h('span', { text: dateText(e.exam_date) }),
             h('span', { class: 'pill', text: EXAM_KIND_LABEL[e.kind] || '学校考试' }),
             e.subject ? h('span', { class: 'pill', text: e.subject }) : null
           ),
@@ -1760,7 +1945,7 @@
             h('button', {
               class: 'tiny danger', text: '删除',
               onclick: () => removeRow('exams', e.id,
-                '这场考试记录（' + examDateText(e.exam_date) + ' ' + (e.name || e.subject || '') + '）'),
+                '这场考试记录（' + dateText(e.exam_date) + ' ' + (e.name || e.subject || '') + '）'),
             })
           ) : null
         ));
@@ -1898,13 +2083,15 @@
         supabase_key: SUPABASE_KEY,
         tables: ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources', 'exams'],
         schema_sql: 'study/setup.sql + setup-3-feed.sql + setup-4-chapters.sql + setup-5-link.sql'
-                  + ' + setup-6-exams.sql（都可重复执行）',
+                  + ' + setup-6-exams.sql + setup-7-countdown.sql（都可重复执行）',
       },
       me: S.me ? { id: S.me.id, email: S.me.email, display_name: nameOf(S.me.id) } : null,
       counts: {
         profiles: S.profileList.length, goals: S.goals.length, tasks: S.tasks.length,
         subtasks: S.subtasks.length, daily_logs: S.daily.length, resources: S.resources.length,
         exams: S.exams.length,
+        // 倒计时不是独立的表，是 goals 里 due_date 非空的那部分，这里单独给个数便于对账
+        countdown: S.goals.filter((g) => g.due_date).length,
       },
       data: {
         profiles: S.profileList, goals: S.goals, tasks: S.tasks,
@@ -1915,8 +2102,10 @@
   }
 
   function renderData() {
+    const nCd = S.goals.filter((g) => g.due_date).length;
     $('export-meta').textContent =
-      '目标 ' + S.goals.length + ' · 大任务 ' + S.tasks.length + ' · 小任务 ' + S.subtasks.length +
+      '倒计时 ' + nCd + ' · 目标 ' + S.goals.length + ' · 大任务 ' + S.tasks.length +
+      ' · 小任务 ' + S.subtasks.length +
       ' · 日记 ' + S.daily.length + ' · 资源 ' + S.resources.length +
       ' · 考试 ' + S.exams.length;
   }
@@ -1940,7 +2129,7 @@
     if (!snap || snap.app !== APP_ID || !snap.data) { toast('这不是本页面导出的快照', true); return; }
 
     const order = ['profiles', 'goals', 'tasks', 'subtasks', 'daily_logs', 'resources', 'exams'];
-    let written = 0, skipped = 0, noTable = '';
+    let written = 0, skipped = 0, noTable = '', noCol = 0;
     $('import-meta').textContent = '导入中…';
 
     for (const t of order) {
@@ -1952,16 +2141,29 @@
       skipped += rows.length - mine.length;
       if (!mine.length) continue;
 
-      for (let i = 0; i < mine.length; i += 200) {
-        const chunk = mine.slice(i, i + 200);
+      /* 库里的 goals 还没有 due_date 列时，带着这一列的行会被 PostgREST 整批拒掉，
+         连带同一批里的旧目标一起写不进去。剥掉它再写 —— 少一列，其余数据保住。 */
+      let write = mine;
+      if (t === 'goals' && S.cdNoCol) {
+        const had = mine.filter((r) => 'due_date' in r).length;
+        if (had) {
+          noCol = had;
+          write = mine.map((r) => { const c = Object.assign({}, r); delete c.due_date; return c; });
+        }
+      }
+
+      for (let i = 0; i < write.length; i += 200) {
+        const chunk = write.slice(i, i + 200);
         const { error } = await sb.from(t).upsert(chunk, t === 'daily_logs' ? { onConflict: 'owner,log_date' } : undefined);
         if (error) { toast('导入 ' + t + ' 失败：' + error.message, true); $('import-meta').textContent = ''; return; }
         written += chunk.length;
       }
     }
     $('import-meta').textContent = '写入 ' + written + ' 行，跳过 ' + skipped + ' 行（属于对方的，权限规则不允许我改）'
-      + (noTable ? '；快照里的考试成绩没导 —— 库里还没这张表，先跑 study/setup-6-exams.sql' : '');
-    toast(noTable ? '导入完成（考试成绩那部分没导，见下方说明）' : '导入完成');
+      + (noTable ? '；快照里的考试成绩没导 —— 库里还没这张表，先跑 study/setup-6-exams.sql' : '')
+      + (noCol ? '；有 ' + noCol + ' 行倒计时的截止日没导 —— 库里还没这一列，先跑 study/setup-7-countdown.sql，'
+               + '再导一次就能补上' : '');
+    toast(noTable || noCol ? '导入完成（有一小部分没导，见下方说明）' : '导入完成');
     await refresh();
   }
 
@@ -1979,10 +2181,13 @@
 
     for (const g of S.goals) {
       if (!g.done) continue;
+      /* 有截止日的是倒计时任务，没有的是以前的 30 天小目标 —— 同一条动态
+         说法不一样，别把「交开题报告」说成「累计 1 / 1」。 */
       ev.push({
         owner: g.owner, at: g.done_at || null, kind: 'done',
-        text: '完成了 30 天目标 ', strong: g.title,
-        sub: '累计 ' + (g.progress || 0) + ' / ' + g.target,
+        text: g.due_date ? '完成了倒计时任务 ' : '完成了 30 天目标 ',
+        strong: g.title,
+        sub: g.due_date ? '截止 ' + g.due_date : '累计 ' + (g.progress || 0) + ' / ' + g.target,
       });
     }
     for (const s of S.subtasks) {
@@ -2080,13 +2285,19 @@
     for (const id of ids) {
       const mine    = !!S.me && id === S.me.id;
       const g       = S.goals.filter((x) => x.owner === id);
+      /* goals 表现在装两种东西：有截止日的 = 倒计时，没有的 = 以前的 30 天小目标。
+         分开算 —— 倒计时行的 progress 永远是 0/1，混进「累计」会把进度压得没法看。 */
+      const cd      = g.filter((x) => x.due_date);
+      const cdOpen  = cd.filter((x) => !x.done);
+      const cdNext  = cdOpen.slice().sort((a, b) => (a.due_date < b.due_date ? -1 : 1))[0];
+      const gOld    = g.filter((x) => !x.due_date);
       const t       = S.tasks.filter((x) => x.owner === id);
       const subs    = S.subtasks.filter((x) => x.owner === id);
       const subDone = subs.filter((x) => x.done).length;
       const r       = S.resources.filter((x) => x.owner === id);
       const log     = S.daily.find((x) => x.owner === id && x.log_date === today());
-      const gProg   = g.reduce((n, x) => n + (x.progress || 0), 0);
-      const gTarget = g.reduce((n, x) => n + (x.target || 0), 0);
+      const gProg   = gOld.reduce((n, x) => n + (x.progress || 0), 0);
+      const gTarget = gOld.reduce((n, x) => n + (x.target || 0), 0);
 
       box.appendChild(h('div', { class: 'pcard ' + (mine ? 'me' : 'other') },
         h('div', { class: 'pc-head' },
@@ -2102,9 +2313,16 @@
           }) : null
         ),
         h('div', { class: 'pc-rows' },
-          pcRow('月度目标',
-            g.length ? g.filter((x) => x.done).length + ' / ' + g.length + ' 个完成' : '还没建',
-            g.length ? '累计 ' + gProg + ' / ' + gTarget : ''),
+          pcRow('倒计时',
+            cd.length ? '待办 ' + cdOpen.length + ' / ' + cd.length + ' 件' : '还没建',
+            /* 「最急的」而不是「最近的」—— 排最前的很可能是已经欠着的那件，
+               说「最近」会让人以为它在未来。和倒计时卡片上的说法保持一致。 */
+            cdNext ? '最急的 ' + dateText(cdNext.due_date) + ' · ' +
+                     cdLeftText(daysFromToday(cdNext.due_date))
+                   : cd.length ? '全部完成' : ''),
+          pcRow('30 天小目标',
+            gOld.length ? gOld.filter((x) => x.done).length + ' / ' + gOld.length + ' 个完成' : '还没建',
+            gOld.length ? '累计 ' + gProg + ' / ' + gTarget : ''),
           pcRow('大任务',
             t.length ? t.length + ' 个' : '还没建',
             subs.length ? '小任务 ' + subDone + ' / ' + subs.length : ''),
@@ -2122,7 +2340,7 @@
   function renderEntries() {
     const box = $('home-entries');
     clear(box);
-    [['goals', '月度任务', '这个月做了什么，一格一天'],
+    [['goals', '月度任务', '倒计时 + 这个月做了什么，一格一天'],
      ['tasks', '大任务拆解', '推进小任务进度'],
      ['daily', '今日完成情况', '记下今天完成了什么'],
      ['res', '学习资源', '工具书 / 网课 / 老师'],
@@ -2181,6 +2399,8 @@
       if (f) await onAvatarFile(f);
       e.target.value = '';
     });
+
+    $('cd-add').addEventListener('click', addCountdown);
 
     $('g-add').addEventListener('click', async () => {
       const title = $('g-title').value.trim();
